@@ -41,6 +41,7 @@ output_figs <- "02_scripts/overview_analysis/01_Figure/figs/"
 seurat_obj <- readRDS(file = paste0(input_data, "seurat_annotated_correctly.rds"))
 ```
 
+# Figure 1 Suppl E
 
 ```{R plot_e}
 Idents(seurat_obj) <- "ann_lvl_1_total"
@@ -54,6 +55,8 @@ ggsave(file = paste0(output_figs, "Suppl_E_vln_QC.png"), height = 8, width = 8)
 ```{R }
 seurat_obj_subset_immune <- subset(seurat_obj, subset = ann_general_immune %in% c("Not-annotated"), invert = TRUE)
 ```
+
+# Figure 1 Suppl F
 
 
 ```{R plot_F}

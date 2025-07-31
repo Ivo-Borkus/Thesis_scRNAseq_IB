@@ -49,6 +49,14 @@ figure_output <- "02_scripts/overview_analysis/03_Figure/final_figs/"
 seurat_obj <- readRDS(file = paste0("03_processing/101_processing_exernal/data/optimising_hdWGCNA/Inhous_hvf_5000_nnp_25_max_shared_10_seurat_processed_final_annotated.rds"))
 ```
 
+# this looks a bit like a chaotic 02_scripts
+
+It actually should've been very simple with plotDMEsvolcano.
+However, because my modules have _ in the script, the colours are lost.
+I adjusted the code to work for my module names, but it is therefore using a slight adjustment of source 
+
+I contributed this also to the hdWGCNA package, but I kept it here to show my work. And maybe also I have not updated the library yet haha... oops.
+
 
 
 ```{R performing differential module expression}
@@ -226,20 +234,5 @@ dev.off()
 ```
 
 ```{R}
-MEs <- GetMEs(seurat_obj, TRUE, wgcna_name)
-MEs %>% head()
-MEs <- MEs[, colnames(MEs) != "grey"]
-
-# set all negative values to zero
-MEs[MEs < 0] <- 0
-
-# transpose MEs so cells are columns and rows are MEs
-MEs <- t(MEs)
-MEs %>% head()
-
-
-MEs %>% rownames()
-ME_assay <- Seurat::CreateAssayObject(MEs)
-DMEs %>% head()
-ME_assay$counts[1, 1]
+sessionInfo()
 ```

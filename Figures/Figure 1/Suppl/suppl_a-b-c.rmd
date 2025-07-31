@@ -45,7 +45,7 @@ seurat_obj <- subset(seurat_obj, subset = ann_general_immune %in% c("Not-annotat
 ```
 
 
-```{R 1d}
+```{R processing}
 reduction_name <- "Plotting_general_immune"
 sample_col <- "primary_sample"
 Idents(seurat_obj) <- "ann_general_immune"
@@ -77,7 +77,9 @@ seurat_obj <- JoinLayers(seurat_obj)
 ```
 
 ## Extra info for the reduction:
+ 
 
+# Figure 1 Suppl A and B
 ```{R sample before and after integration, fig.width = 20}
 plot_1 <- dittoDimPlot(seurat_obj, reduction.use = paste0("umap_", reduction_name), var = "primary_sample", do.label = F, do.raster = TRUE, theme = theme_minimal(), show.axes.numbers = FALSE, xlab = "", ylab = "")
 plot_2 <- dittoDimPlot(seurat_obj, reduction.use = paste0("umap.harmony.", reduction_name), var = "primary_sample", do.label = F, do.raster = TRUE, theme = theme_minimal(), show.axes.numbers = FALSE, xlab = "", ylab = "")
@@ -90,6 +92,8 @@ ggsave(filename = paste0(output_figs, "dimplot_post_int", reduction_name, ".pdf"
 wrap_plots(plot_1, plot_2) + plot_layout(guides = "collect")
 ggsave(filename = paste0(output_figs, "suppl_A_B", reduction_name, ".pdf"), width = 20, height = 10)
 ```
+
+# Figure 1 Suppl C
 
 ```{R lisi-plots}
 ndims <- 25

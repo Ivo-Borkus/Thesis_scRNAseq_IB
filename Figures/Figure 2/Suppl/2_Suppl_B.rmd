@@ -50,7 +50,7 @@ seurat_obj_Tcells@meta.data <- seurat_obj_Tcells@meta.data %>%
 order_plot <- c(
     "Proliferating_CD4_Tcells", "Proliferating_CD8_Tcells",
     "Naive_Tcells", "Effector_memory_CD8_Tcells", "Effector_CD8_Tcells", "Exhausted_CD8_Tcells", "Texterm_CD8",
-     "Helper_Tcells", "Regulatory_Tcells","Active_Tcells", "IFN_response_Tcells",
+    "Helper_Tcells", "Regulatory_Tcells", "Active_Tcells", "IFN_response_Tcells",
     "NK", "GD_NKT_CD8_Tcells"
 )
 Idents(seurat_obj_Tcells) <- "ann_T_1"
@@ -64,10 +64,10 @@ marker_list_Tcell <- c(
     "PTPRC", # CD45 Immune
     "CD3D", "CD3E", # T cells (not expressed by NK)
     "CD4", # CD4+
-    "CD8A","CD8B", # CD8+
-    "TOP2A", "MKI67",  # Proliferation
-    "CCR7", "IL7R", "SELL","LEF1", "TCF7",# Naive/memory markers
-    "KLRG1","CX3CR1","GZMK","PRDM1","EOMES", # Differentiation markers
+    "CD8A", "CD8B", # CD8+
+    "TOP2A", "MKI67", # Proliferation
+    "CCR7", "IL7R", "SELL", "LEF1", "TCF7", # Naive/memory markers
+    "KLRG1", "CX3CR1", "GZMK", "PRDM1", "EOMES", # Differentiation markers
     "LAG3", "NKG7", "HAVCR2", "CTLA4", "PDCD1", "TOX", # Exhaustian markers
     # "IFNG", "IL21", # Interferons
     "CXCL13", "MAF", "CD40LG", "ICOS", "CXCR5", # T helper cells (CXCR5 and BCL6 nowhere expressed, so removed for clarity)
@@ -81,49 +81,8 @@ marker_list_Tcell <- c(
 # marker_list_Tcell <- c("CD4", "CXCR5", "CXCL13", "PDCD1", "BCL6", "MAF")
 all <- DotPlot(seurat_obj_Tcells, features = marker_list_Tcell, cluster.idents = FALSE) + theme(axis.text = element_text(size = 15)) + coord_flip() + RotatedAxis()
 all
-ggsave(paste(output_figs, "dotplot_all_T_cells_v2.png"), width = 8, height = 9)#, units = "in", dpi = 1000)
-
-
-
-
+ggsave(paste(output_figs, "dotplot_all_T_cells_v2.png"), width = 8, height = 9) # , units = "in", dpi = 1000)
 ```
-
-
-
-```{R random code}
-
-# Idents(seurat_obj_Tcells) <- "cells_of_interest"
-
-
-
-
-dittoDotPlot(seurat_obj_Tcells, marker_list_Tcell, group.by = "ann_T_1") + coord_flip()
-
-Idents(seurat_obj) <- "cells_of_interest"
-VlnPlot(seurat_obj, features = "doublet.score")
-seurat_obj
-DimPlot(seurat_obj, reduction = "umap.harmony.Inhouse_im_T_cells")
-
-# DotPlot(seurat_obj_Tcells, features = c("CD4", "PDCD1", "ICOS", "CXCL13", "CXCR5", "CTLA4", "TIGIT", "HAVCR2", "LAG3", "HNF1A", "CCR2"), cluster.idents = FALSE) + RotatedAxis()
-
-# VlnPlot(seurat_obj_Tcells, features = "IL21")
-# seurat_obj_Tcells$primary_sample
-
-# (Idents(seurat_obj_Tcells) %>% group_by(primary_sample) %>% table() / (Idents(seurat_obj_Tcells) %>% group_by(primary_sample) %>% table() %>% sum())) * 100
-```
-
-
-
-```{R}
-
-seurat_obj_Tcells@meta.data %>% select(primary_sample) %>% table()
-seurat_obj_Tcells@meta.data %>% group_by(primary_sample) %>% select(ann_T_1) %>% table()
-table(as.data.frame(3.787103,10.53329,8.98545,8.339829), colnames = ())
-
-977,3019, 5086, 5132
-37,318,457,428
-```
-
 
 ```{R saving}
 ggsave(paste(output_figs, "dotplot_all_T_cells.pdf"), width = 12, height = 7, units = "in", dpi = 1000)

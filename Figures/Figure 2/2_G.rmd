@@ -1,0 +1,63 @@
+
+---
+title: "2-B"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, fig.width = 15, fig.height = 15)
+```
+
+# Loading packages
+
+```{R loading libraries, include = FALSE}
+# install.packages("Seurat")
+library(Seurat)
+# BiocManager::install("clusterProfiler")
+# BiocManager::install("pathview")
+# BiocManager::install("enrichplot")
+
+
+# devtools::install_github("immunogenomics/lisi")
+# library(lisi)
+library(dplyr)
+library(ggplot2)
+library(purrr)
+library(here)
+library(tidyr)
+library(ggrepel)
+library(gridExtra)
+library(patchwork)
+# library(dittoSeq)
+# library(UCell)
+source("02_scripts/overview_analysis/Functions_2.R")
+
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+input_data <- "02_scripts/overview_analysis/01_Figure/data/"
+figure_output <- "02_scripts/overview_analysis/02_Figure/figs/"
+```
+
+```{R loading seurat T cells}
+seurat_obj_Tcells <- readRDS(file = paste0(input_data, "processed_Tcells_annotated_Fig_2B.rds"))
+```
+
+```{R marker_list scRNAseq,  eval = T}
+# install.packages('devtools')
+# devtools::install_github('immunogenomics/presto')
+
+Idents(seurat_obj_Tcells) <- "cells_of_interest"
+pdf(paste0(figure_output, "2F_Vulcano_plot.pdf"), width = 10, height = 10) # Increase width
+marker_list <- FindMarkers(seurat_obj_Tcells, ident.1 = "Senescent T cells", ident.2 = "Non-senescent T cells", test.use = "wilcox")
+volcano_plotting(marker_list, ident.1 = "Senescent T cells", ident.2 = "Non-senescent T cells", p_stat = "p_val_adj") + theme_bw() + theme(
+  panel.border = element_blank(), panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")
+)
+dev.off()
+```

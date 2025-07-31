@@ -30,25 +30,25 @@ library(cowplot)
 library(patchwork)
 library(here)
 library(ggrepel)
+figure_output <- "02_scripts/presentation_figures/new/"
 ```
 
-
-```{R settings}
-figure_output <- "02_scripts/overview_analysis/01_Figure/figs/"
-```
-
-```{R loading seurat}
-input_data <- "02_scripts/overview_analysis/01_Figure/data/"
-seurat_obj <- readRDS(file = paste0(input_data, "seurat_annotated_correctly.rds"))
-seurat_obj_subset_immune <- subset(seurat_obj, subset = ann_general_immune %in% c("Not-annotated"), invert = TRUE)
-```
 
 ```{R loading meta-data}
 simple_meta <- read.csv("03_processing/09_subset_annotation/figs/composition_graphs/simple_meta.csv", header = TRUE)
 colnames(simple_meta) <- c("sample", "Necrosis_lab", "Hemorrhage_lab", "vital_tumour_lab", "CD3_lab", "CD8_lab", "CD68_lab")
 ```
 
-```{R metadata}
+```{R loading seurat}
+input_data <- "02_scripts/overview_analysis/01_Figure/data/"
+seurat_obj <- readRDS(file = paste0(input_data, "seurat_annotated_correctly.rds"))
+```
+
+```{R prepping immune seurat}
+seurat_obj_subset_immune <- subset(seurat_obj, subset = ann_general_immune %in% c("Not-annotated"), invert = TRUE)
+```
+
+```{R setting order}
 seurat_obj_subset_immune@meta.data %>%
     group_by(ann_general_immune, primary_sample) %>%
     summarise(n = n()) %>%
@@ -70,11 +70,21 @@ meta_data <- left_join(composition, simple_meta, by = "primary_sample")
 
 
 
-```{R plotting all columns}
-plot_list <- list()
-columns_of_interest <- c("Naive_Tcells", "Cycling Tcells")
-all_columns <- unique(seurat_obj_subset_immune$ann_general_immune)
+# Figure 1 G
 
+columns_of_interest <- c("Naive_Tcells")
+
+# Figure 1 Suppl D
+
+all_columns <- all_columns[!all_columns %in% columns_of_interest] # everything except Naive T cells
+
+loop was applied for columns of interest or all columns depending on the figure.
+Here is the example for Figure 1 Suppl D
+```{R extracting plots of interest}
+plot_list <- list()
+columns_of_interest <- c("Naive_Tcells")
+all_columns <- unique(seurat_obj_subset_immune$ann_general_immune)
+all_columns <- all_columns[!all_columns %in% columns_of_interest]
 results_list <- list(
     P_Value = numeric(),
     Adj_R_Squared = numeric(),
@@ -82,7 +92,7 @@ results_list <- list(
 )
 for (column in all_columns) {
     plot_data <- meta_data
-    relative_immune <- paste0(column, "_relative_immune")
+    relative_immune <- paste0(column, " relative immune")
     relative_total <- paste0(column, "_relative_total")
     plot_data[[relative_immune]] <- (plot_data[[column]] / plot_data$Cell_count_immune) * 100
     plot_data[[relative_total]] <- (plot_data[[column]] / plot_data$Cell_count) * 100
@@ -91,7 +101,7 @@ for (column in all_columns) {
     label_par <- "primary_sample"
 
     summary_stats <- summary(lm(plot_data[[x_par]] ~ plot_data[[y_par]], data = plot_data))
-    p_val <- as.numeric(summary_stats$coefficients[, 4][2])
+    p_val <- summary_stats$coefficients[, 4][2]
     adj_r2 <- summary_stats$adj.r.squared
     round(cor(plot_data[[x_par]], plot_data[[y_par]], method = c("pearson")), 3) -> corr
     # Store results
@@ -105,54 +115,42 @@ for (column in all_columns) {
         corr_place_x <- max(plot_data[[x_par]])
     }
 
+    # Separate the replicate samples
+    replicates <- plot_data %>%
+        filter(primary_sample %in% c("Mel2a", "Mel2b"))
+    # Average numeric columns and summarize categorical columns
+    replicate_avg <- replicates %>%
+        summarise(
+            across(where(is.numeric), mean, na.rm = TRUE), # average numerics
+            sample = paste(unique(sample), collapse = "_"), # concatenate categorical
+            primary_sample = "Mel2avg", # new name
+            .groups = "drop"
+        )
 
-    plot_data %>% ggplot(aes(x = !!sym(x_par), y = !!sym(y_par), colour = !!sym(label_par), label = !!sym(label_par))) +
+    # Remove the original replicate rows and add the new averaged one
+    plot_data_final <- plot_data %>%
+        filter(!primary_sample %in% c("Mel2a", "Mel2b")) %>%
+        bind_rows(replicate_avg)
+    plot_data_final$col <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#FFC0CB", "gray40")
+    plot_data_final %>% ggplot(aes(x = !!sym(x_par), y = !!sym(y_par), colour = !!sym(label_par), label = !!sym(label_par)), show.legend = F) +
         geom_point() +
         geom_text_repel(, size = 4, color = "black", max.overlaps = Inf) +
-        labs(title = paste0(column)) +
         geom_smooth(method = lm, color = "red", se = FALSE) +
         annotate("text",
             x = corr_place_x, y = max(plot_data[[y_par]]),
             label = paste("r = ", corr), hjust = 1, size = 5
         ) -> plot
+    plot <- plot + scale_color_manual(values = plot_data_final$col)
+    plot <- plot + labs(title = paste0(column), y = "Tumour vitality (%)", x = paste0(column, " % of immune"))
     plot <- plot + theme_bw() + theme(
         panel.border = element_blank(), panel.grid.major = element_blank(),
-        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"),
+        axis.text = element_text(size = 10), axis.title = element_text(size = 15), title = element_text(size = 25)
     )
     plot_list[[column]] <- plot
 }
-```
 
-```{R plotting, eval = F}
-pdf(paste0(figure_output, "correlation_plots_immune_Specific_subtypes.pdf"), width = 5, height = 7)
-wrap_plots(plot_list, ncol = 1) + plot_layout(guides = "collect")
+pdf(paste0(figure_output, "correlation_plots_immune_Specific_subtypes_legend.pdf"), width = 10, height = 10)
+wrap_plots(plot_list, ncol = 3) + plot_layout(guides = "collect") # & theme(legend.position = "none")
 dev.off()
-```
-
-
-```{R plot_list 2}
-pdf(paste0(figure_output, "Suppl_G_correlation_plots_all.pdf"), width = 13, height = 13)
-wrap_plots(plot_list, ncol = 3) + plot_layout(guides = "collect")
-dev.off()
-wrap_plots(plot_list, ncol = 3) + plot_layout(guides = "collect")
-```
-
-
-```{R table of statistics}
-results_list %>% as.data.frame() -> results_df
-row.names(results_df) <- all_columns
-knitr::kable(results_df, format = "markdown")
-```
-
-```{R sessionInfo}
-sessionInfo()
-```
-
-```{R rmd, eval = F}
-rmarkdown::render(
-    input = paste0("02_scripts/overview_analysis/01_Figure/suppl/suppl_G.rmd"),
-    output_format = "html_document",
-    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits",
-    output_file = paste0("suppl_G_1.html")
-)
 ```
