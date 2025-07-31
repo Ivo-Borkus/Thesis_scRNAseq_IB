@@ -1,0 +1,12 @@
+[gene-expression]
+reference,/scratch_isilon/groups/singlecell/shared/data/references/refdata-gex-GRCh38-2024-A
+chemistry,fiveprime
+no-secondary,true
+expect-cells, 10000
+create-bam,false
+include-introns,true
+[libraries]
+fastq_id,fastqs,feature_types
+105086-009-003,/scratch_isilon/groups/singlecell/iborkus/pia_data/105086-009-003_BrM23-25/,Gene Expression
+
+
