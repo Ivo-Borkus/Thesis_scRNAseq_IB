@@ -1,0 +1,530 @@
+---
+title: "Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+params:
+    dataset_name: "Lee"
+    cell_type: "T_cells"
+
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, fig.width = 20, fig.height = 20)
+```
+
+
+# Loading libraries and setting directories
+```{R loading libraries, include = F, echo = T}
+library(Seurat)
+
+# plotting and data science packages
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+
+# co-expression network analysis packages:
+library(WGCNA)
+library(hdWGCNA)
+library(knitr)
+# using the cowplot theme for ggplot
+theme_set(theme_cowplot())
+
+# set random seed for reproducibility
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+source("02_scripts/101_processing_external_datasets/qc_functions.R")
+set.seed(1123)
+# optionally enable multithreading
+enableWGCNAThreads(nThreads = 8)
+```
+
+# loading datasets and selecting the object of interest
+
+```{R Loading inhouse data, eval = T}
+seurat_obj <- readRDS(file = "03_processing/101_processing_exernal/data/optimising_hdWGCNA/inhouse_dataset.rds")
+dataset <- "Inhouse"
+cell_type_of_interest <- "T_cells"
+sample_col_list <- list(
+    Biermann = "ID",
+    Gonzalez = "sample_names",
+    Inhouse = "sample",
+    Lee = "Sample"
+)
+sample_col <- sample_col_list[[dataset]]
+```
+
+```{R processing inhouse dataset with different HVF}
+### Variables to tweak: HVF gene amount
+Idents(seurat_obj) <- "generalised_ann_1"
+seurat_obj <- subset(x = seurat_obj, idents = cell_type_of_interest, invert = F)
+reduction_name <- paste0(dataset, "_im_", cell_type_of_interest)
+seurat_obj[["RNA"]] <- split(seurat_obj[["RNA"]], f = seurat_obj@meta.data[[sample_col]])
+
+
+intermediate_object <- seurat_obj
+
+
+## First checking HVF
+seurat_list_features <- lapply(c(1000, 2500, 3000, 5000, 10000), function(features) {
+    seurat_obj <- intermediate_object
+    print(features)
+    seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = "vst", nfeatures = features, verbose = TRUE)
+    hvf_info <- HVFInfo(seurat_obj)
+    top_variable_genes <- hvf_info[order(hvf_info$variance.standardized, decreasing = TRUE), ]
+    top_x_genes <- rownames(top_variable_genes)[1:features]
+    VariableFeatures(seurat_obj) <- top_x_genes
+    seurat_obj <- ScaleData(object = seurat_obj, vars.to.regress = c("percent_mt"), features = top_x_genes, verbose = FALSE)
+    seurat_obj <- RunPCA(
+        object = seurat_obj, nfeatures.print = 5, ndims.print = 1:2, reduction.name = paste0("pca_", reduction_name)
+    )
+    pdf(paste0("02_scripts/overview_analysis/hdWGCNA/figs/PCA_plots_", features, ".pdf"), width = 15, height = 15)
+    print(ElbowPlot(seurat_obj, reduction = paste0("pca_", reduction_name), ndims = 100))
+    print(VizDimLoadings(seurat_obj, dims = 1:5, reduction = paste0("pca_", reduction_name), nfeatures = 15))
+    dev.off()
+    seurat_obj
+})
+
+saveRDS(seurat_list_features, file = "03_processing/101_processing_exernal/data/optimising_hdWGCNA/Inhouse_dataset_hvf_scaled_pcas.rds")
+seurat_list_features
+
+processed_seurat_features <- lapply(seurat_list_features, function(seurat_obj) {
+    seurat_obj <- IntegrateLayers(
+        object = seurat_obj, method = HarmonyIntegration,
+        orig.reduction = paste0("pca_", reduction_name), new.reduction = paste0("harmony_pca.", reduction_name),
+        verbose = TRUE
+    )
+    seurat_obj <- FindNeighbors(seurat_obj, reduction = paste0("harmony_pca.", reduction_name), dims = 1:25)
+    seurat_obj <- RunUMAP(seurat_obj, reduction = paste0("harmony_pca.", reduction_name), dims = 1:25, reduction.name = paste0("umap.harmony.", reduction_name))
+    seurat_obj <- JoinLayers(seurat_obj)
+    seurat_obj
+})
+
+
+saveRDS(processed_seurat_features, file = "03_processing/101_processing_exernal/data/optimising_hdWGCNA/Inhouse_dataset_hvf_harmony_performed.rds")
+```
+
+
+```{R}
+names(processed_seurat_features) <- c("1000", "2500", "3000", "5000", "10000")
+lapply(names(processed_seurat_features), function(name) {
+    seurat_obj <- processed_seurat_features[[name]]
+    pdf(paste0("02_scripts/overview_analysis/hdWGCNA/figs/feature_plots", name, ".pdf"), width = 15, height = 15)
+    print(FeaturePlot(seurat_obj,
+        reduction = paste0("umap.harmony.", reduction_name),
+        features = c("CD8A", "CD3E", "CD3D", "CD68", "CD163", "IGHG3", "MS4A1")
+    ))
+    Idents(seurat_obj) <- "generalised_ann_1"
+    print(VlnPlot(seurat_obj, features = c("CD8A", "CD3E", "CD3D", "CD68", "CD163", "IGHG3", "MS4A1")))
+    print(DimPlot(seurat_obj,
+        reduction = paste0("umap.harmony.", reduction_name),
+        label = T
+    ))
+    dev.off()
+})
+```
+
+
+#### Setting up WGCNA
+```{R setup wgcna}
+wgcna_object_list <- lapply(names(processed_seurat_features), function(name) {
+    seurat_obj <- processed_seurat_features[[name]]
+
+    seurat_obj <- SetupForWGCNA(
+        seurat_obj,
+        gene_select = "variable", # the gene selection approach
+        wgcna_name = reduction_name # the name of the hdWGCNA experiment
+    )
+})
+```
+
+#### Setting up the metacells
+
+#### With 5000 HVF
+```{R running metacells with multiple different settings}
+# Then for 5000 HVF we check multiple nearest neighbor parameter
+# 10000 HVF is down below
+
+seurat_obj_wgcna <- wgcna_object_list[[4]]
+wgcna_metacell_list <- lapply(c(5, 10, 15, 20, 30, 50, 100), function(nnp) {
+    seurat_obj <- MetacellsByGroups(
+        seurat_obj = seurat_obj_wgcna,
+        group.by = c("generalised_ann_1", sample_col), # specify the columns in seurat_obj@meta.data to group by
+        reduction = paste0("harmony_pca.", reduction_name), # select the dimensionality reduction to perform KNN on
+        k = nnp, # nearest-neighbors parameter
+        max_shared = 10, # maximum number of shared cells between two metacells
+        ident.group = "generalised_ann_1" # set the Idents of the metacell seurat object
+    )
+    seurat_obj
+})
+
+saveRDS(wgcna_metacell_list, file = "03_processing/101_processing_exernal/data/optimising_hdWGCNA/Inhouse_dataset_metacell_object_pre-normalisat.rds")
+
+wgcna_normalised_list <- lapply(wgcna_metacell_list, function(seurat_obj) {
+    seurat_obj_normalized <- NormalizeMetacells(seurat_obj)
+    seurat_obj_normalized
+})
+```
+
+```{R setting data expression}
+set_expr_list_soft_power <- lapply(wgcna_normalised_list, function(seurat_obj) {
+    seurat_obj <- SetDatExpr(
+        seurat_obj,
+        group_name = cell_type_of_interest,
+        group.by = "generalised_ann_1",
+        assay = "RNA",
+        layer = "data"
+    )
+    seurat_obj <- TestSoftPowers(
+        seurat_obj,
+        networkType = "signed" # you can also use "unsigned" or "signed hybrid"
+    )
+})
+```
+
+
+```{R constructing dendograms}
+names(set_expr_list_soft_power) <- c("5", "10", "15", "20", "30", "50", "100")
+
+network_constructed <- lapply(names(set_expr_list_soft_power), function(name) {
+    seurat_obj <- set_expr_list_soft_power[[name]]
+    seurat_obj <- ConstructNetwork(
+        seurat_obj,
+        tom_name = paste0("matrix_knn_", name, "_hvf_5000"), # name of the topoligical overlap matrix written to disk
+        deepSplit = 4, # Lowest possible settings to get only the most robust modules
+        overwrite_tom = TRUE
+    )
+    pdf(paste0("02_scripts/overview_analysis/hdWGCNA/figs/dendogram_plots", name, ".pdf"), width = 15, height = 15)
+    PlotDendrogram(seurat_obj, main = paste0("Tcell hdWGCNA Dendrogram 5000 hvf and knn parameter: ", name))
+    dev.off()
+})
+```
+
+#### Processing with 10000 HVF of NNP parameter
+
+```{R running metacells with multiple different settings}
+processed_seurat_features <- readRDS(file = "03_processing/101_processing_exernal/data/optimising_hdWGCNA/Inhouse_dataset_hvf_harmony_performed.rds")
+names(processed_seurat_features) <- c("1000", "2500", "3000", "5000", "10000")
+reduction_name <- paste0(dataset, "_im_", cell_type_of_interest)
+
+wgcna_object_list <- lapply(names(processed_seurat_features), function(name) {
+    seurat_obj <- processed_seurat_features[[name]]
+
+    seurat_obj <- SetupForWGCNA(
+        seurat_obj,
+        gene_select = "variable", # the gene selection approach
+        wgcna_name = reduction_name # the name of the hdWGCNA experiment
+    )
+})
+
+seurat_obj_wgcna <- wgcna_object_list[[5]]
+wgcna_metacell_list <- lapply(c(5, 10, 15, 20, 30, 50, 100), function(nnp) {
+    seurat_obj <- MetacellsByGroups(
+        seurat_obj = seurat_obj_wgcna,
+        group.by = c("generalised_ann_1", sample_col), # specify the columns in seurat_obj@meta.data to group by
+        reduction = paste0("harmony_pca.", reduction_name), # select the dimensionality reduction to perform KNN on
+        k = nnp, # nearest-neighbors parameter
+        max_shared = 10, # maximum number of shared cells between two metacells
+        ident.group = "generalised_ann_1" # set the Idents of the metacell seurat object
+    )
+    seurat_obj
+})
+
+# saveRDS(wgcna_metacell_list, file = "03_processing/101_processing_exernal/data/optimising_hdWGCNA/Inhouse_dataset_metacell_object_pre-normalisat.rds")
+# wgcna_metacell_list
+wgcna_normalised_list <- lapply(wgcna_metacell_list, function(seurat_obj) {
+    seurat_obj_normalized <- NormalizeMetacells(seurat_obj)
+    seurat_obj_normalized
+})
+```
+
+```{R setting data expression}
+set_expr_list_soft_power <- lapply(wgcna_normalised_list, function(seurat_obj) {
+    seurat_obj <- SetDatExpr(
+        seurat_obj,
+        group_name = cell_type_of_interest,
+        group.by = "generalised_ann_1",
+        assay = "RNA",
+        layer = "data"
+    )
+    seurat_obj <- TestSoftPowers(
+        seurat_obj,
+        networkType = "signed" # you can also use "unsigned" or "signed hybrid"
+    )
+})
+```
+
+
+```{R constructing dendograms}
+names(set_expr_list_soft_power) <- c("5", "10", "15", "20", "30", "50", "100")
+
+network_constructed <- lapply(names(set_expr_list_soft_power), function(name) {
+    seurat_obj <- set_expr_list_soft_power[[name]]
+    seurat_obj <- ConstructNetwork(
+        seurat_obj,
+        tom_name = paste0("matrix_knn_", name, "_hvf_10000"), # name of the topoligical overlap matrix written to disk
+        deepSplit = 4, # Lowest possible settings to get only the most robust modules
+        overwrite_tom = TRUE
+    )
+    pdf(paste0("02_scripts/overview_analysis/hdWGCNA/figs/dendogram_plots", name, ".pdf"), width = 15, height = 15)
+    PlotDendrogram(seurat_obj, main = paste0("Tcell hdWGCNA Dendrogram 10000 hvf and knn parameter: ", name))
+    dev.off()
+})
+```
+
+
+
+```{R arguments}
+# dataset <- params$dataset_name
+# cell_type_of_interest <- params$cell_type
+reduction_name <- paste0(dataset, "_im")
+sample_col_list <- list(
+    Biermann = "ID",
+    Gonzalez = "sample_names",
+    Inhouse = "sample",
+    Lee = "Sample"
+)
+sample_col <- sample_col_list[[dataset]]
+if (dataset == "Inhouse") {
+    reduction_name <- "immune_no_doub"
+}
+seurat_obj <- seurat_list_prepared[[dataset]]
+
+output_figs <- paste0("03_processing/102_hdWGCNA/figs/batch/", reduction_name, "_", cell_type_of_interest, "_")
+```
+
+# Running visualisations on all checked variables for the datasets.
+# This ensured manual selection of the best parameters
+
+## Processing tabs {.tabset}
+
+### Subset seurat
+
+#### Some basic overview of the dataset T cells before subsetting
+```{R plotting}
+# Figures should be saved as the subsetted seurat:
+output_figs <- paste0("03_processing/102_hdWGCNA/figs/batch/", reduction_name, "_", cell_type_of_interest, "_subset_")
+
+FeaturePlot(seurat_obj,
+    reduction = paste0("umap.harmony.", reduction_name),
+    features = c("CD8A", "CD3E", "CD3D", "CD68", "CD163", "IGHG3", "MS4A1")
+) & NoAxes()
+Idents(seurat_obj) <- "generalised_ann_1"
+VlnPlot(seurat_obj, features = c("CD8A", "CD3E", "CD3D", "CD68", "CD163", "IGHG3", "MS4A1"))
+seurat_obj %>% Reductions()
+DimPlot(seurat_obj,
+    reduction = paste0("umap.harmony.", reduction_name),
+    label = T
+) & NoAxes()
+```
+
+
+# This script
+```{R Running seurat subsetting, child ="02_scripts/101_processing_external_datasets/childs_hdWGCNA/subset_seurat.rmd"}
+```
+
+
+
+```{R plotting_2}
+FeaturePlot(seurat_obj,
+    reduction = paste0("umap.harmony.", reduction_name),
+    features = c("CD8A", "CD3E", "CD3D", "CD68", "CD163", "IGHG3", "MS4A1")
+) & NoAxes()
+Idents(seurat_obj) <- "generalised_ann_1"
+VlnPlot(seurat_obj, features = c("CD8A", "CD3E", "CD3D", "CD68", "CD163", "IGHG3", "MS4A1"))
+seurat_obj %>% Reductions()
+DimPlot(seurat_obj,
+    reduction = paste0("umap.harmony.", reduction_name),
+    label = T
+) & NoAxes()
+```
+
+#### Setting up WGCNA
+```{R setup wgcna}
+seurat_obj <- SetupForWGCNA(
+    seurat_obj,
+    gene_select = "variable", # the gene selection approach
+    wgcna_name = reduction_name # the name of the hdWGCNA experiment
+)
+```
+
+
+#### Setting up the metacells
+
+```{R setup metacells}
+# construct metacells  in each group
+seurat_obj <- MetacellsByGroups(
+    seurat_obj = seurat_obj,
+    group.by = c("generalised_ann_1", sample_col), # specify the columns in seurat_obj@meta.data to group by
+    reduction = paste0("harmony_pca.", reduction_name), # select the dimensionality reduction to perform KNN on
+    k = 25, # nearest-neighbors parameter
+    max_shared = 10, # maximum number of shared cells between two metacells
+    ident.group = "generalised_ann_1" # set the Idents of the metacell seurat object
+)
+
+# normalize metacell expression matrix:
+seurat_obj <- NormalizeMetacells(seurat_obj)
+```
+
+
+#### Setting the data expression only to t cells (Is it really necessary though?)
+```{R setdataexpression}
+seurat_obj <- SetDatExpr(
+    seurat_obj,
+    group_name = cell_type_of_interest,
+    group.by = "generalised_ann_1",
+    assay = "RNA",
+    layer = "data"
+)
+```
+
+
+#### determining softpower
+
+```{R softpower analysis}
+seurat_obj <- TestSoftPowers(
+    seurat_obj,
+    networkType = "signed" # you can also use "unsigned" or "signed hybrid"
+)
+
+# plot the results:
+plot_list <- PlotSoftPowers(seurat_obj)
+
+# assemble with patchwork
+wrap_plots(plot_list, ncol = 2)
+```
+
+
+```{R power_table function, include = F, echo = F, eval = F}
+power_table <- GetPowerTable(seurat_obj)
+```
+
+
+#### Constructing module network (and plotting dendograms)
+```{R constructing the network and plotting for different splits}
+seurat_obj <- ConstructNetwork(
+    seurat_obj,
+    tom_name = "TOM_matrix_0", # name of the topoligical overlap matrix written to disk
+    deepSplit = 0, # Lowest possible settings to get only the most robust modules
+    overwrite_tom = TRUE
+)
+PlotDendrogram(seurat_obj, main = "Tcell hdWGCNA Dendrogram_0")
+
+
+seurat_obj <- ConstructNetwork(
+    seurat_obj,
+    tom_name = "TOM_matrix_2", # name of the topoligical overlap matrix written to disk
+    deepSplit = 2, # Probably the most accurate, but depends on the graph, as it is a balance between sensitivity and robustness
+    overwrite_tom = TRUE
+)
+PlotDendrogram(seurat_obj, main = "Tcell hdWGCNA Dendrogram_2")
+
+seurat_obj <- ConstructNetwork(
+    seurat_obj,
+    tom_name = paste0("TOM_matrix_4", dataset, "_", cell_type_of_interest), # name of the topoligical overlap matrix written to disk
+    deepSplit = 4, # Highest possible setting yields all possible modules to be found (very sensitive)
+    overwrite_tom = F
+)
+PlotDendrogram(seurat_obj, main = "Tcell hdWGCNA Dendrogram_4")
+```
+
+#### Moduling eigengenes
+
+This function takes into account the network modules, performs PCA on the esubsetted gene matrices. Then the first PC with the highest variability in the Module is extracted as the Eigenmodule (basically the genes that explain the most variability in this module).
+
+```{R   extracting info from the top eigen genes, warning=F, echo = T, include = F}
+seurat_obj <- ModuleEigengenes(
+    seurat_obj,
+    group.by.vars = sample_col
+)
+### Warning::
+#   You're computing too large a percentage of total singular values, use a standard svd instead.
+
+hMEs <- GetMEs(seurat_obj) #  harmonized module eigengenes:
+
+MEs <- GetMEs(seurat_obj, harmonized = FALSE) # module eigengenes:
+```
+
+#### module connectivity on T-cells
+```{R determining the moduleconnectivity}
+seurat_obj <- ModuleConnectivity(
+    seurat_obj,
+    group.by = "generalised_ann_1", group_name = cell_type_of_interest
+)
+```
+
+#### Plotting module ranked genes
+```{R gene ranks and resetting name, fig.width = 10, fig.height = 10}
+seurat_obj <- ResetModuleNames(
+    seurat_obj,
+    new_name = paste0(cell_type_of_interest, "-M")
+)
+p <- PlotKMEs(seurat_obj, ncol = 2)
+p
+ggsave(plot = p, filename = paste0(output_figs, "ranked_genes_per_module.png"), width = 15, height = 15)
+```
+
+#### Extracting info from modules
+
+```{R getting module info}
+modules <- GetModules(seurat_obj) %>% subset(module != "grey")
+
+# show the first 6 columns:
+head(modules[, 1:6])
+
+hub_df <- GetHubGenes(seurat_obj, n_hubs = 10)
+
+head(hub_df)
+```
+
+#### plotting scores on featureplots
+
+```{R plotting scores}
+seurat_obj <- ModuleExprScore(
+    seurat_obj,
+    n_genes = 25,
+    method = "UCell"
+)
+
+plot_list <- ModuleFeaturePlot(
+    seurat_obj,
+    features = "hMEs", # plot the hMEs
+    order = TRUE, # order so the points with highest hMEs are on top
+    reduction = paste0("umap.harmony.", reduction_name)
+)
+# stitch together with patchwork
+wrap_plots(plot_list, ncol = 2)
+ggsave(filename = paste0(output_figs, "feature_plot_modules_hMEs.png"))
+
+
+plot_list <- ModuleFeaturePlot(
+    seurat_obj,
+    features = "MEs", # plot the hMEs
+    order = TRUE, # order so the points with highest hMEs are on top
+    reduction = paste0("umap.harmony.", reduction_name)
+)
+# stitch together with patchwork
+wrap_plots(plot_list, ncol = 2)
+ggsave(filename = paste0(output_figs, "feature_plot_modules_ME.png"))
+
+
+# make a featureplot of hub scores for each module
+plot_list <- ModuleFeaturePlot(
+    seurat_obj,
+    features = "scores", # plot the hub gene scores
+    order = "shuffle", # order so cells are shuffled
+    ucell = TRUE, # depending on Seurat vs UCell for gene scoring
+    reduction = paste0("umap.harmony.", reduction_name)
+)
+
+# stitch together with patchwork
+wrap_plots(plot_list, ncol = 2)
+ggsave(filename = paste0(output_figs, "feature_plot_modules_hub.png"))
+```
+
+```{R saving seurat, eval = T}
+saveRDS(seurat_obj, file = paste0("03_processing/102_hdWGCNA/data/", reduction_name, "_subset_hdWGCNA_object.rds"))
+```
