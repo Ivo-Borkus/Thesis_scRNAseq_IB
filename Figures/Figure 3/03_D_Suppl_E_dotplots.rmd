@@ -50,29 +50,58 @@ seurat_obj <- readRDS(file = paste0("03_processing/101_processing_exernal/data/o
 ```
 
 ```{R ordering the levels of ann_t_1 }
-object <- seurat_obj
 column <- "ann_T_1"
-col <- object@meta.data[[column]]
+col <- seurat_obj@meta.data[[column]]
 level_order <- c("Proliferating_CD4_Tcells", "Proliferating_CD8_Tcells", "Naive_Tcells", "Effector_memory_CD8_Tcells", "Effector_CD8_Tcells", "Exhausted_CD8_Tcells", "Texterm_CD8", "Regulatory_Tcells", "Helper_Tcells", "Active_Tcells", "IFN_response_Tcells", "NK", "GD_NKT_CD8_Tcells")
 levels(col) <- level_order
-object@meta.data[[column]] <- factor(object@meta.data[[column]], levels = level_order)
+seurat_obj@meta.data[[column]] <- factor(seurat_obj@meta.data[[column]], levels = level_order)
 ```
 
-
+# Figure D
 ```{R }
+# This code was sourced from hdWGCNA tutorial
 library(patchwork)
 png(filename = paste0(figure_output, "dotplot_modules.png"), width = 600, height = 700)
-projected_MEs <- GetMEs(object)
-Idents(object) <- "ann_T_1"
-# add MEs to Seurat meta-data:
-object@meta.data <- cbind(
-    object@meta.data,
+projected_MEs <- GetMEs(seurat_obj)
+Idents(seurat_obj) <- "ann_T_1"
+
+
+seurat_obj@meta.data <- cbind(
+    seurat_obj@meta.data,
     projected_MEs
 )
 
-# plot with Seurat's DotPlot function
 p <- DotPlot(
-    object,
+    seurat_obj,
+    features = colnames(projected_MEs[c(1, 2, 3, 4, 5, 7)]), cluster.idents = T # ,
+    # group.by = "generalised_ann_2"
+)
+p <- p +
+    RotatedAxis() +
+    scale_color_gradient2(high = "red", mid = "grey95", low = "blue") +
+    xlab("") + ylab("")
+p
+dev.off()
+```
+
+
+# Suppl figure E
+
+```{R}
+# Again sourceed from hdWGCNA tutorial
+library(patchwork)
+png(filename = paste0(figure_output, "dotplot_modules_sample.png"), width = 600, height = 700)
+projected_MEs <- GetMEs(seurat_obj)
+Idents(seurat_obj) <- "primary_sample"
+
+
+seurat_obj@meta.data <- cbind(
+    seurat_obj@meta.data,
+    projected_MEs
+)
+
+p <- DotPlot(
+    seurat_obj,
     features = colnames(projected_MEs[c(1, 2, 3, 4, 5, 7)]), cluster.idents = T # ,
     # group.by = "generalised_ann_2"
 )
@@ -87,31 +116,6 @@ p
 dev.off()
 ```
 
-
 ```{R}
-library(patchwork)
-png(filename = paste0(figure_output, "dotplot_modules_sample.png"), width = 600, height = 700)
-projected_MEs <- GetMEs(object)
-Idents(object) <- "primary_sample"
-# add MEs to Seurat meta-data:
-object@meta.data <- cbind(
-    object@meta.data,
-    projected_MEs
-)
-
-# plot with Seurat's DotPlot function
-p <- DotPlot(
-    object,
-    features = colnames(projected_MEs[c(1, 2, 3, 4, 5, 7)]), cluster.idents = T # ,
-    # group.by = "generalised_ann_2"
-)
-
-
-# flip the x/y axes, rotate the axis labels, and change color scheme:
-p <- p +
-    RotatedAxis() +
-    scale_color_gradient2(high = "red", mid = "grey95", low = "blue") +
-    xlab("") + ylab("")
-p
-dev.off()
+sessionInfo()
 ```

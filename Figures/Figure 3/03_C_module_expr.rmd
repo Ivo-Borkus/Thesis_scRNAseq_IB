@@ -40,7 +40,8 @@ source("02_scripts/101_processing_external_datasets/qc_functions.R")
 set.seed(1123)
 # optionally enable multithreading
 enableWGCNAThreads(nThreads = 8)
-figure_output <- "02_scripts/overview_analysis/03_Figure/final_figs/"
+figure_output <- "02_scripts/presentation_figures/"
+library(ggrastr)
 ```
 
 
@@ -101,10 +102,11 @@ plot_list <- ModuleFeaturePlot(
     seurat_obj,
     features = "hMEs", # plot the hMEs
     order = TRUE, # order so the points with highest hMEs are on top
-    reduction = paste0("umap.harmony.", "Tcells")
+    reduction = paste0("umap.harmony.", "Tcells"),
+    raster = TRUE, raster_dpi = 300
 )
 
-pdf(paste0(figure_output, "figure_3_B_module_features_2000HVF.pdf"), width = 15, height = 15) # Increase width
+pdf(paste0(figure_output, "figure_3_B_module_features_2000_rasterised_HVF_10.pdf"), width = 10, height = 10) # Increase width
 
 wrap_plots(plot_list, ncol = 2)
 

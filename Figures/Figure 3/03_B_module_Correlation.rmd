@@ -48,7 +48,9 @@ figure_output <- "02_scripts/overview_analysis/03_Figure/final_figs/"
 seurat_obj <- readRDS(file = paste0("03_processing/101_processing_exernal/data/optimising_hdWGCNA/Inhous_hvf_5000_nnp_25_max_shared_10_seurat_processed_final.rds"))
 ```
 
+# Signatures used
 
+These will be present in a seperate folder to review on github
 ```{R signatures}
 library(fgsea)
 set.seed(42)
@@ -73,12 +75,6 @@ final_list <- list(
 seurat_obj_module <- AddModuleScore_UCell(seurat_obj,
     features = final_list
 )
-
-seurat_obj_module@meta.data %>% colnames()
-```
-
-
-```{R plotting the correlation}
 seurat_obj_module$CD8A_expression <- FetchData(seurat_obj_module, "CD8A")
 seurat_obj_module$CXCL13_expression <- FetchData(seurat_obj_module, "CXCL13")
 cur_traits_final <- c(
@@ -86,6 +82,10 @@ cur_traits_final <- c(
     "senescence_UCell", "nativity_UCell",
     "CD8A_expression"
 )
+```
+
+
+```{R plotting the correlation}
 correlation_plot <- function(seurat_obj, cur_trait_vec = cur_traits, group = "cells_of_interest", plot_max_var = 0.5) {
     seurat_obj <- ModuleTraitCorrelation(
         seurat_obj,
