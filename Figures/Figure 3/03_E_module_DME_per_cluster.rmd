@@ -1,0 +1,245 @@
+---
+title: "hdWGCNA Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+params:
+    dataset_name: "Lee"
+    cell_type: "T_cells"
+
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, fig.width = 20, fig.height = 20)
+```
+
+
+# Loading libraries and setting directories
+```{R loading libraries, include = F, echo = T}
+library(Seurat)
+
+# plotting and data science packages
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+
+# co-expression network analysis packages:
+library(WGCNA)
+library(hdWGCNA)
+library(knitr)
+# using the cowplot theme for ggplot
+theme_set(theme_cowplot())
+
+# set random seed for reproducibility
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+source("02_scripts/101_processing_external_datasets/qc_functions.R")
+set.seed(1123)
+# optionally enable multithreading
+enableWGCNAThreads(nThreads = 8)
+figure_output <- "02_scripts/overview_analysis/03_Figure/final_figs/"
+```
+
+
+
+```{R loading prepped seurat}
+seurat_obj <- readRDS(file = paste0("03_processing/101_processing_exernal/data/optimising_hdWGCNA/Inhous_hvf_5000_nnp_25_max_shared_10_seurat_processed_final_annotated.rds"))
+```
+
+
+
+```{R performing differential module expression}
+seurat_hdwgcna <- seurat_obj
+seurat_hdwgcna@meta.data$primary %>% unique()
+
+seurat_hdwgcna$ann_T_1 %>% table()
+cell_type_of_interest <- "T_cells"
+group1 <- seurat_hdwgcna@meta.data %>%
+    subset(generalised_ann_1 == cell_type_of_interest & primary == "Melanoma") %>%
+    rownames()
+group2 <- seurat_hdwgcna@meta.data %>%
+    subset(generalised_ann_1 == cell_type_of_interest & primary != "Melanoma") %>%
+    rownames()
+
+seurat_hdwgcna_name <- GetActiveWGCNAName(seurat_hdwgcna)
+
+DMEs <- FindDMEs(
+    seurat_hdwgcna,
+    barcodes1 = group1,
+    barcodes2 = group2,
+    test.use = "wilcox",
+    wgcna_name = seurat_hdwgcna_name
+)
+```
+
+
+```{R plotting results in a volcano plot}
+PlotDMEsVolcano(
+    seurat_hdwgcna,
+    DMEs,
+    wgcna_name = seurat_hdwgcna_name
+)
+```
+
+```{R finding one versus all}
+seurat_obj_name <- GetActiveWGCNAName(seurat_obj)
+
+DMEs_all <- FindAllDMEs(
+    seurat_obj,
+    group.by = "ann_T_1",
+    wgcna_name = seurat_obj_name
+)
+```
+
+```{R plotting it}
+p <- PlotDMEsVolcano(
+    seurat_obj,
+    DMEs_all,
+    wgcna_name = NULL,
+    plot_labels = TRUE,
+    show_cutoff = TRUE
+)
+
+# facet wrap by each cell type
+p + facet_wrap(~group, ncol = 3)
+```
+
+```{R}
+# get modules and module colors
+modules <- GetModules(seurat_obj, seurat_obj_name) %>%
+    subset(module != "grey") %>%
+    mutate(module = droplevels(module))
+module_colors <- modules %>%
+    dplyr::select(c(module, color)) %>%
+    dplyr::distinct()
+
+# module names
+mods <- levels(modules$module)
+mods <- mods[mods %in% DMEs_all$module]
+mod_colors <- module_colors$color
+names(mod_colors) <- as.character(module_colors$module)
+```
+
+```{R}
+wgcna_name <- GetActiveWGCNAName(seurat_obj)
+DMEs <- FindAllDMEs(
+    seurat_obj,
+    group.by = "ann_T_1",
+    wgcna_name = wgcna_name
+)
+DMEs <- DMEs_all
+# remove NAs:
+DMEs <- na.omit(DMEs)
+# lowest non-zero value
+lowest <- DMEs %>%
+    subset(p_val_adj != 0) %>%
+    top_n(-1, wt = p_val_adj) %>%
+    .$p_val_adj
+DMEs$p_val_adj <- ifelse(DMEs$p_val_adj == 0, lowest, DMEs$p_val_adj)
+
+# fix infinite fold change
+max_fc <- max(abs(DMEs$avg_log2FC))
+max_fc <- DMEs %>%
+    subset(abs(avg_log2FC) != Inf) %>%
+    .$avg_log2FC %>%
+    max()
+DMEs$avg_log2FC <- ifelse(DMEs$avg_log2FC == -Inf, -1 * max_fc, DMEs$avg_log2FC)
+DMEs$avg_log2FC <- ifelse(DMEs$avg_log2FC == Inf, max_fc, DMEs$avg_log2FC)
+
+# get modules and module colors
+modules <- GetModules(seurat_obj, wgcna_name) %>%
+    subset(module != "grey") %>%
+    mutate(module = droplevels(module))
+module_colors <- modules %>%
+    dplyr::select(c(module, color)) %>%
+    dplyr::distinct()
+
+# module names
+mods <- levels(modules$module)
+mods <- mods[mods %in% DMEs$module]
+mod_colors <- module_colors$color
+names(mod_colors) <- as.character(mods)
+
+if (length(mods) == 0) {
+    mods <- levels(modules$module)
+    mods <- gsub("_", "-", mods)
+    mods <- mods[mods %in% DMEs$module]
+    mod_colors <- module_colors$color
+    names(mod_colors) <- as.character(mods)
+}
+
+# annotate modules with significant DME
+DMEs$anno <- ifelse(DMEs$p_val_adj < 0.05, DMEs$module, "")
+
+# set default x-axis limit if not provided
+xmax <- max_fc
+xlim_range <- c((-1 * xmax) - 0.1, xmax + 0.1) # Adjust as needed
+
+
+
+# set default y-axis limit if not provided
+ymax <- max(-log10(DMEs$p_val_adj))
+ylim_range <- c(0, ymax + 1) # Adjust as needed
+
+# plot basics
+p <- DMEs %>%
+    ggplot(aes(x = avg_log2FC, y = -log10(p_val_adj), fill = module, color = module))
+
+p <- p +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "grey75", alpha = 0.8) +
+    geom_rect(
+        data = DMEs[1, ],
+        aes(xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = -log10(0.05)), fill = "grey75", alpha = 0.8, color = NA
+    )
+
+
+mod_point_size <- 4
+p <- p + geom_point(size = mod_point_size, pch = 21, color = "black")
+
+label_size <- 4
+p <- p + ggrepel::geom_text_repel(aes(label = anno), color = "black", min.segment.length = 0, max.overlaps = Inf, size = label_size)
+
+DMEs$module
+mod_colors
+p <- p +
+    scale_fill_manual(values = mod_colors) +
+    scale_color_manual(values = mod_colors) +
+    xlim(xlim_range) + # Apply new xlim range
+    ylim(ylim_range) + # Apply new ylim range
+    xlab(bquote("Average log"[2] ~ "(Fold Change)")) +
+    ylab(bquote("-log"[10] ~ "(Adj. P-value)")) +
+    theme(
+        panel.border = element_rect(color = "black", fill = NA, size = 1),
+        panel.grid.major = element_blank(),
+        axis.line = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = "bottom"
+    ) + NoLegend()
+
+
+png(paste0(figure_output, "figure_3_E_DME_T_1.png"), width = 10, height = 20, res = 600, units = "in") # Increase width
+p + facet_wrap(~group, ncol = 2)
+dev.off()
+```
+
+```{R}
+MEs <- GetMEs(seurat_obj, TRUE, wgcna_name)
+MEs %>% head()
+MEs <- MEs[, colnames(MEs) != "grey"]
+
+# set all negative values to zero
+MEs[MEs < 0] <- 0
+
+# transpose MEs so cells are columns and rows are MEs
+MEs <- t(MEs)
+MEs %>% head()
+
+
+MEs %>% rownames()
+ME_assay <- Seurat::CreateAssayObject(MEs)
+DMEs %>% head()
+ME_assay$counts[1, 1]
+```

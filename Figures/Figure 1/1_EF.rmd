@@ -1,0 +1,93 @@
+
+---
+title: "1-EF"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, fig.width = 15, fig.height = 15)
+```
+
+# Loading packages
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+# devtools::install_github("immunogenomics/lisi")
+library(lisi)
+library(dplyr)
+library(ggplot2)
+library(purrr)
+library(here)
+library(tidyr)
+library(ggrepel)
+library(gridExtra)
+library(patchwork)
+library(dittoSeq)
+library(RColorBrewer)
+
+
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+input_data <- "02_scripts/overview_analysis/01_Figure/data/"
+output_figs <- "02_scripts/presentation_figures/"
+```
+
+# Loading seurat object
+```{R loading seurat}
+seurat_obj <- readRDS(file = paste0(input_data, "seurat_annotated_correctly.rds"))
+```
+
+# E
+```{R E}
+features_all <- c("MLANA", "MOG", "PTPRC", "CD68", "CD3E", "CD8A", "IGHG1", "MS4A1")
+seurat_obj$ann_lvl_1 %>%
+  table()
+
+Idents(seurat_obj) <- "ann_lvl_1"
+seurat_obj@active.ident <- factor(seurat_obj@active.ident,
+  levels = c("Tumour", "Brain", "Myeloid", "T-cells", "B-cells")
+)
+combined <- DotPlot(seurat_obj, features = features_all, cluster.idents = F) + theme(axis.text = element_text(size = 10)) + coord_flip() + RotatedAxis()
+print(combined)
+ggsave(combined, file = paste0(output_figs, "E_Dotplot_all_anno.png"), height = 4, width = 5)
+color_lvl_1 <- brewer.pal(n = 5, name = "Set1")
+vln <- VlnPlot(seurat_obj, features = c("percent_mt", "nCount_RNA", "nFeature_RNA"), cols = color_lvl_1, log = T) + theme(axis.text = element_text(size = 15))
+ggsave(vln, file = paste0(output_figs, "qc_all.png"), height = 10, width = 10)
+```
+
+# F
+
+```{R F}
+marker_list_general <- c("PTPRC", "CD3D", "CD4", "CD8A", "CD8B", "SELL", "IL7R", "TOP2A", "MKI67", "KLRF1", "VCAN", "CD163", "CXCL10", "CD1C", "IGHG2", "MS4A1")
+seurat_obj_subset_immune <- subset(seurat_obj, subset = ann_general_immune %in% c("Not-annotated"), invert = TRUE)
+Idents(seurat_obj_subset_immune) <- "ann_general_immune"
+seurat_obj_subset_immune$ann_general_immune %>%
+  table()
+
+seurat_obj_subset_immune@active.ident <- factor(seurat_obj_subset_immune@active.ident,
+  levels = c("Naive_Tcells", "CD8-Tcells", "CD4-Tcells", "Cycling Tcells", "NK", "Mono/Macro", "Neutrophils", "Dendritic cells", "B-cells")
+)
+
+length(marker_list_general)
+unique(marker_list_general)
+Idents(seurat_obj_subset_immune) %>% unique()
+all <- DotPlot(seurat_obj_subset_immune, features = unique(marker_list_general), cluster.idents = F) + theme(axis.text = element_text(size = 15)) + coord_flip() + RotatedAxis()
+all
+
+ggsave(file = paste0(output_figs, "F_Dotplot_general_anno.png"), width = 6, height = 6)
+
+color_lvl_2 <- brewer.pal(n = 9, name = "Set3")
+
+vln <- VlnPlot(seurat_obj_subset_immune, features = c("percent_mt", "nCount_RNA", "nFeature_RNA"), cols = color_lvl_2, log = T) & theme(axis.text = element_text(size = 25))
+ggsave(vln, file = paste0(output_figs, "qc_immune.png"), height = 10, width = 15)
+```
+
+
+```{R sessioninfo}
+sessionInfo()
+```

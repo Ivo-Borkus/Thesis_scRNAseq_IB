@@ -1,0 +1,63 @@
+
+---
+title: "1-EF"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, fig.width = 15, fig.height = 15)
+```
+
+# Loading packages
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+# devtools::install_github("immunogenomics/lisi")
+library(lisi)
+library(dplyr)
+library(ggplot2)
+library(purrr)
+library(here)
+library(tidyr)
+library(ggrepel)
+library(gridExtra)
+library(patchwork)
+library(dittoSeq)
+
+
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+input_data <- "02_scripts/overview_analysis/01_Figure/data/"
+output_figs <- "02_scripts/overview_analysis/01_Figure/figs/"
+```
+
+# Loading seurat object
+```{R loading seurat}
+seurat_obj <- readRDS(file = paste0(input_data, "seurat_annotated_correctly.rds"))
+```
+
+
+```{R plot_e}
+Idents(seurat_obj) <- "ann_lvl_1_total"
+VlnPlot(seurat_obj, features = c("nFeature_RNA", "nCount_RNA", "percent_mt"), log = TRUE)
+ggsave(file = paste0(output_figs, "Suppl_E_vln_QC.png"), height = 8, width = 8)
+```
+
+
+
+
+```{R }
+seurat_obj_subset_immune <- subset(seurat_obj, subset = ann_general_immune %in% c("Not-annotated"), invert = TRUE)
+```
+
+
+```{R plot_F}
+Idents(seurat_obj_subset_immune) <- "ann_general_immune"
+VlnPlot(seurat_obj_subset_immune, features = c("nFeature_RNA", "nCount_RNA", "percent_mt"), log = TRUE)
+ggsave(file = paste0(output_figs, "Suppl_F_vln_QC.png"), height = 8, width = 8)
+```

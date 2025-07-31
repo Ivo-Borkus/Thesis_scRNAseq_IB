@@ -1,0 +1,140 @@
+
+---
+title: "2-B"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, fig.width = 15, fig.height = 15)
+```
+
+# Loading packages
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+# devtools::install_github("immunogenomics/lisi")
+library(lisi)
+library(dplyr)
+library(ggplot2)
+library(purrr)
+library(here)
+library(tidyr)
+library(ggrepel)
+library(gridExtra)
+library(patchwork)
+library(dittoSeq)
+library(UCell)
+
+
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+input_data <- "02_scripts/overview_analysis/01_Figure/data/"
+output_figs <- "02_scripts/overview_analysis/02_Figure/figs/"
+```
+
+# Loading seurat object
+```{R loading seurat}
+seurat_obj_Tcells <- readRDS(file = paste0(input_data, "processed_Tcells_annotated_Fig_2B.rds"))
+reduction_name <- "Tcells"
+```
+
+```{R figure 2 D}
+reduction_name <- "Tcells"
+features <- FeaturePlot(seurat_obj_Tcells,
+    reduction = paste0("umap.harmony.", reduction_name),
+    features = c("CD8A", "CD3E", "CD3D", "CD4", "TOP2A", "MKI67", "CXCL13", "LAG3", "IL7R")
+) & NoAxes()
+features
+```
+
+```{R extra plot, eval = F}
+plot_3 <- dittoDimPlot(seurat_obj_Tcells, reduction.use = paste0("umap.harmony.", reduction_name), var = "cells_of_interest", do.label = F)
+plot_3
+```
+
+```{R signatures for plot C}
+library(fgsea)
+set.seed(42)
+dir_name <- "02_scripts/overview_analysis/02_Figure/excel_signatures/"
+signature_names_final <- c("KEGG_DNA_REPLICATION.v2025.1.Hs.grp", "Universal_human.txt")
+sig_1 <- scan(paste0(dir_name, signature_names_final[[1]]), what = "character")
+sig_2 <- scan(paste0(dir_name, signature_names_final[[2]]), what = "character")
+Naive_signature <- c("CCR7", "IL7R", "SELL", "TCF7", "LEF1", "BACH2", "BCF2", "ID3")
+Naive_signature_2 <- c(
+    "CCR7+", "PASK+", "NELL2+", "SELL+", "LDHB+", "RCAN3+", "CPA5+", "SPINT2+", "BEX3+", "TCF7+", "BEX2+", "LEF1-AS1+", "LEF1+", "LEPROTL1+", "CAMK4+",
+    "PRF1-", "NKG7-", "EFHD2-", "ADRB2-", "GZMA-", "S1PR5-", "C12ORF75-", "CCL4-", "GZMB-", "PLEK-", "CX3CR1-", "GNLY-", "GZMH-", "CTSC-", "ZEB2-"
+)
+
+# I could also include more such as "BACH2" "BCF2" "ID3"
+final_list <- list(
+    "DNA_replication" = sig_1[4:length(sig_1)],
+    "senescence" = sig_2,
+    "nativity" = Naive_signature,
+    "nativity_2" = Naive_signature_2
+)
+
+seurat_obj_module <- AddModuleScore_UCell(seurat_obj_Tcells,
+    features = final_list
+)
+seurat_obj_module$CD8A_expression <- FetchData(seurat_obj_module, "CD8A")
+seurat_obj_module$CD4_expression <- FetchData(seurat_obj_module, "CD4")
+seurat_obj_module$CXCL13_expression <- FetchData(seurat_obj_module, "CXCL13")
+
+cur_traits <- c(
+    "CXCL13_expression", "DNA_replication_UCell",
+    "senescence_UCell", "nativity_UCell", "nativity_2_UCell",
+    "CD8A_expression"
+)
+```
+
+```{R Plot C}
+features <- FeaturePlot(seurat_obj_module,
+    reduction = paste0("umap.harmony.", reduction_name),
+    features = cur_traits
+) & NoAxes()
+
+features
+
+col <- seurat_obj_module$senescence_UCell
+
+scale_values <- function(x) {
+    (x - min(x)) / (max(x) - min(x))
+}
+seurat_obj_module$scaled_senes <- scale_values(col)
+seurat_obj_module$scaled_senes_2 <- scale(col)
+seurat_obj_module$scaled_senes_3 <- log(col + 1)
+
+
+cur_traits_final <- c(
+    "CXCL13_expression", "DNA_replication_UCell",
+    "senescence_UCell", "nativity_UCell", "nativity_2_UCell",
+    "CD8A_expression", "scaled_senes", "scaled_senes_2", "scaled_senes_3"
+)
+features <- FeaturePlot(seurat_obj_module,
+    reduction = paste0("umap.harmony.", reduction_name),
+    features = cur_traits_final
+) & NoAxes()
+
+features
+```
+
+```{R}
+seurat_obj_module$se %>% table()
+Idents(seurat_obj_module) <- "cells_of_interest"
+
+colnames(seurat_obj_module@meta.data)
+VlnPlot(seurat_obj_module, features = "scaled_senes")
+seurat_obj_module
+```
+
+```{R}
+sessionInfo()
+```
+
+

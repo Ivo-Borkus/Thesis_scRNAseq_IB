@@ -1,0 +1,115 @@
+---
+title: "1-D"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, fig.width = 15, fig.height = 15)
+```
+
+# Loading packages
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+# devtools::install_github("immunogenomics/lisi")
+library(lisi)
+library(dplyr)
+library(ggplot2)
+library(purrr)
+library(here)
+library(tidyr)
+library(ggrepel)
+library(gridExtra)
+library(patchwork)
+library(dittoSeq)
+
+
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+input_data <- "02_scripts/overview_analysis/01_Figure/data/"
+output_figs <- "02_scripts/overview_analysis/01_Figure/figs/"
+```
+
+# Loading seurat object
+```{R loading seurat}
+seurat_obj <- readRDS(file = paste0(input_data, "seurat_annotated_correctly.rds"))
+```
+
+```{R subsetting for immune}
+seurat_obj <- subset(seurat_obj, subset = ann_general_immune %in% c("Not-annotated"), invert = TRUE)
+```
+
+
+```{R 1d}
+reduction_name <- "Plotting_general_immune"
+sample_col <- "primary_sample"
+Idents(seurat_obj) <- "ann_general_immune"
+features <- 2000
+
+seurat_obj[["RNA"]] <- split(seurat_obj[["RNA"]], f = seurat_obj@meta.data[[sample_col]])
+seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = "vst", nfeatures = features, verbose = TRUE)
+hvf_info <- HVFInfo(seurat_obj)
+top_variable_genes <- hvf_info[order(hvf_info$variance.standardized, decreasing = TRUE), ]
+top_x_genes <- rownames(top_variable_genes)[1:features]
+VariableFeatures(seurat_obj) <- top_x_genes
+seurat_obj <- ScaleData(object = seurat_obj, vars.to.regress = c("percent_mt"), features = top_x_genes, verbose = FALSE)
+seurat_obj <- RunPCA(
+    object = seurat_obj, nfeatures.print = 5, ndims.print = 1:2, reduction.name = paste0("pca_", reduction_name)
+)
+print(ElbowPlot(seurat_obj, reduction = paste0("pca_", reduction_name), ndims = 100))
+print(VizDimLoadings(seurat_obj, dims = 1:5, reduction = paste0("pca_", reduction_name), nfeatures = 15))
+seurat_obj <- FindNeighbors(seurat_obj, reduction = paste0("pca_", reduction_name), dims = 1:25)
+seurat_obj <- RunUMAP(seurat_obj, reduction = paste0("pca_", reduction_name), dims = 1:25, reduction.name = paste0("umap_", reduction_name))
+
+seurat_obj <- IntegrateLayers(
+    object = seurat_obj, method = HarmonyIntegration,
+    orig.reduction = paste0("pca_", reduction_name), new.reduction = paste0("harmony_pca.", reduction_name),
+    verbose = TRUE
+)
+seurat_obj <- FindNeighbors(seurat_obj, reduction = paste0("harmony_pca.", reduction_name), dims = 1:25)
+seurat_obj <- RunUMAP(seurat_obj, reduction = paste0("harmony_pca.", reduction_name), dims = 1:25, reduction.name = paste0("umap.harmony.", reduction_name))
+seurat_obj <- JoinLayers(seurat_obj)
+```
+
+## Extra info for the reduction:
+
+```{R sample before and after integration, fig.width = 20}
+plot_1 <- dittoDimPlot(seurat_obj, reduction.use = paste0("umap_", reduction_name), var = "primary_sample", do.label = F, do.raster = TRUE, theme = theme_minimal(), show.axes.numbers = FALSE, xlab = "", ylab = "")
+plot_2 <- dittoDimPlot(seurat_obj, reduction.use = paste0("umap.harmony.", reduction_name), var = "primary_sample", do.label = F, do.raster = TRUE, theme = theme_minimal(), show.axes.numbers = FALSE, xlab = "", ylab = "")
+plot_1
+ggsave(filename = paste0(output_figs, "dimplot_pre-int", reduction_name, ".pdf"), width = 10, height = 10)
+
+plot_2
+ggsave(filename = paste0(output_figs, "dimplot_post_int", reduction_name, ".pdf"), width = 10, height = 10)
+
+wrap_plots(plot_1, plot_2) + plot_layout(guides = "collect")
+ggsave(filename = paste0(output_figs, "suppl_A_B", reduction_name, ".pdf"), width = 20, height = 10)
+```
+
+```{R lisi-plots}
+ndims <- 25
+Embeddings(seurat_obj, reduction = paste0("harmony_pca.", reduction_name))[, 1:25] %>% compute_lisi(, meta_data = seurat_obj@meta.data, label_colnames = c("sample")) -> lis
+Embeddings(seurat_obj, reduction = paste0("pca_", reduction_name))[, 1:25] %>% compute_lisi(, meta_data = seurat_obj@meta.data, label_colnames = c("sample")) -> lis_no_int
+
+lis_no_int$integrated <- "no"
+lis$integrated <- "yes"
+combined <- rbind(lis_no_int, lis)
+t.test(sample ~ integrated, data = combined) -> test_result
+test_result$p.value
+
+plot <- ggplot(combined, mapping = aes(x = integrated, y = sample)) +
+    geom_boxplot() +
+    theme_minimal() & labs(title = paste0("t-test statistic: ", round(test_result$statistic, 2)))
+plot
+ggsave(plot, filename = paste0(output_figs, "Lisi_samples_normal_", reduction_name, ".pdf"), width = 4, height = 4)
+```
+
+
+```{R sessioninfo}
+sessionInfo()
+```

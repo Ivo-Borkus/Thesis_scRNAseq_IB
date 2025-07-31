@@ -1,0 +1,135 @@
+---
+title: "2-A"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, fig.width = 15, fig.height = 15)
+```
+
+# Loading packages
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+# devtools::install_github("immunogenomics/lisi")
+library(lisi)
+library(dplyr)
+library(ggplot2)
+library(purrr)
+library(here)
+library(tidyr)
+library(ggrepel)
+library(gridExtra)
+library(patchwork)
+library(dittoSeq)
+
+
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+input_data <- "02_scripts/overview_analysis/01_Figure/data/"
+output_figs <- "02_scripts/overview_analysis/02_Figure/figs/"
+```
+
+# Loading seurat object
+```{R loading seurat}
+seurat_obj_Tcells <- readRDS(file = paste0(input_data, "processed_Tcells_annotated_Fig_2B.rds"))
+seurat_obj_Tcells@meta.data <- seurat_obj_Tcells@meta.data %>%
+    mutate(primary = case_when(
+        primary_sample %in% c("CUP1") ~ "CUP",
+        primary_sample %in% c("Col1", "Col2") ~ "Col",
+        primary_sample %in% c("Lung1") ~ "Lung",
+        primary_sample %in% c("Mel1", "Mel2a", "Mel2b", "Mel3") ~ "Mel",
+        TRUE ~ "Other"
+    ))
+
+order_plot <- c(
+    "Proliferating_CD4_Tcells", "Proliferating_CD8_Tcells",
+    "Naive_Tcells", "Effector_memory_CD8_Tcells", "Effector_CD8_Tcells", "Exhausted_CD8_Tcells", "Texterm_CD8",
+     "Helper_Tcells", "Regulatory_Tcells","Active_Tcells", "IFN_response_Tcells",
+    "NK", "GD_NKT_CD8_Tcells"
+)
+Idents(seurat_obj_Tcells) <- "ann_T_1"
+seurat_obj_Tcells@active.ident <- factor(seurat_obj_Tcells@active.ident, levels = order_plot)
+```
+
+
+```{R dotplot}
+# Papers used: Pan-cancer, Kim et al.
+marker_list_Tcell <- c(
+    "PTPRC", # CD45 Immune
+    "CD3D", "CD3E", # T cells (not expressed by NK)
+    "CD4", # CD4+
+    "CD8A","CD8B", # CD8+
+    "TOP2A", "MKI67",  # Proliferation
+    "CCR7", "IL7R", "SELL","LEF1", "TCF7",# Naive/memory markers
+    "KLRG1","CX3CR1","GZMK","PRDM1","EOMES", # Differentiation markers
+    "LAG3", "NKG7", "HAVCR2", "CTLA4", "PDCD1", "TOX", # Exhaustian markers
+    # "IFNG", "IL21", # Interferons
+    "CXCL13", "MAF", "CD40LG", "ICOS", "CXCR5", # T helper cells (CXCR5 and BCL6 nowhere expressed, so removed for clarity)
+    "IL2RA", "FOXP3", # T regs
+    "TNFRSF9", # T cell active gene --> CD137 or 1-4BB
+    "IFIT1", # IFN response genes
+    "KLRF1", "NCAM1", # NK markers --> Pan cancer
+    "TRDC", "TRGC2" # Gamma delta (TRGC1 nowhere expressed, so removed for clarity)
+)
+
+# marker_list_Tcell <- c("CD4", "CXCR5", "CXCL13", "PDCD1", "BCL6", "MAF")
+all <- DotPlot(seurat_obj_Tcells, features = marker_list_Tcell, cluster.idents = FALSE) + theme(axis.text = element_text(size = 15)) + coord_flip() + RotatedAxis()
+all
+ggsave(paste(output_figs, "dotplot_all_T_cells_v2.png"), width = 8, height = 9)#, units = "in", dpi = 1000)
+
+
+
+
+```
+
+
+
+```{R random code}
+
+# Idents(seurat_obj_Tcells) <- "cells_of_interest"
+
+
+
+
+dittoDotPlot(seurat_obj_Tcells, marker_list_Tcell, group.by = "ann_T_1") + coord_flip()
+
+Idents(seurat_obj) <- "cells_of_interest"
+VlnPlot(seurat_obj, features = "doublet.score")
+seurat_obj
+DimPlot(seurat_obj, reduction = "umap.harmony.Inhouse_im_T_cells")
+
+# DotPlot(seurat_obj_Tcells, features = c("CD4", "PDCD1", "ICOS", "CXCL13", "CXCR5", "CTLA4", "TIGIT", "HAVCR2", "LAG3", "HNF1A", "CCR2"), cluster.idents = FALSE) + RotatedAxis()
+
+# VlnPlot(seurat_obj_Tcells, features = "IL21")
+# seurat_obj_Tcells$primary_sample
+
+# (Idents(seurat_obj_Tcells) %>% group_by(primary_sample) %>% table() / (Idents(seurat_obj_Tcells) %>% group_by(primary_sample) %>% table() %>% sum())) * 100
+```
+
+
+
+```{R}
+
+seurat_obj_Tcells@meta.data %>% select(primary_sample) %>% table()
+seurat_obj_Tcells@meta.data %>% group_by(primary_sample) %>% select(ann_T_1) %>% table()
+table(as.data.frame(3.787103,10.53329,8.98545,8.339829), colnames = ())
+
+977,3019, 5086, 5132
+37,318,457,428
+```
+
+
+```{R saving}
+ggsave(paste(output_figs, "dotplot_all_T_cells.pdf"), width = 12, height = 7, units = "in", dpi = 1000)
+```
+
+
+```{R sessionInfo}
+sessioninfo()
+```

@@ -1,0 +1,267 @@
+---
+title: "Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: t rue
+params:
+    dataset_name: "Lee"
+    cell_type: "T_cells"
+
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, fig.width = 20, fig.height = 20)
+```
+
+
+# Loading libraries and setting directories
+```{R loading libraries, include = F, echo = T}
+library(Seurat)
+
+# plotting and data science packages
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+
+# co-expression network analysis packages:
+library(WGCNA)
+library(hdWGCNA)
+library(knitr)
+# using the cowplot theme for ggplot
+theme_set(theme_cowplot())
+
+
+## Decouplr
+
+library(decoupleR)
+library(GSVA)
+library(ggpubr)
+library(ggplot2)
+library(dplyr)
+library(ggbeeswarm)
+
+# set random seed for reproducibility
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+source("02_scripts/101_processing_external_datasets/qc_functions.R")
+set.seed(1123)
+# optionally enable multithreading
+enableWGCNAThreads(nThreads = 8)
+figure_output <- "02_scripts/overview_analysis/03_Figure/final_figs/"
+```
+
+
+
+```{R loading prepped seurat}
+reference_dataset <- readRDS(file = paste0("03_processing/101_processing_exernal/data/optimising_hdWGCNA/Inhous_hvf_5000_nnp_25_max_shared_10_seurat_processed_final_annotated.rds"))
+```
+
+```{R settings}
+figure_output <- "02_scripts/presentation_figures/"
+cell_type_of_interest <- "T_cells"
+col_cell_type <- "generalised_ann_1"
+wgcna_name_ref <- GetActiveWGCNAName(reference_dataset)
+wgcna_name_query <- "Subset_analysis"
+```
+
+
+```{R loading in all of the datasets}
+datasets <- c("Gonzalez", "Inhouse", "Lee", "Biermann")
+
+seurat_list_preserved <- lapply(datasets, function(dataset_to_use) {
+    seurat_query <- readRDS(file = paste0("03_processing/101_processing_exernal/data/optimising_hdWGCNA/query_processed_", dataset_to_use, ".rds"))
+    seurat_query
+})
+names(seurat_list_preserved) <- datasets
+```
+
+```{R combining datasets to process together}
+# Merging
+seurat_list_preserved[["Biermann"]]$sample <- seurat_list_preserved[["Biermann"]]$ID
+seurat_list_preserved[["Biermann"]]$primary <- "Melanoma"
+seurat_list_preserved[["Biermann"]]$treatment <- "Naive"
+seurat_list_preserved[["Biermann"]]$df <- "Biermann"
+
+###
+
+###
+seurat_list_preserved[["Gonzalez"]]@meta.data$primary <- sapply(seurat_list_preserved[["Gonzalez"]]$sample_names, function(X) {
+    string <- strsplit(X, split = "_")
+    primary <- string[[1]][1]
+    primary
+})
+seurat_list_preserved[["Gonzalez"]]@meta.data$primary <- ifelse(seurat_list_preserved[["Gonzalez"]]@meta.data$primary == "Melan", "Melanoma", as.character(seurat_list_preserved[["Gonzalez"]]@meta.data$primary))
+seurat_list_preserved[["Gonzalez"]]@meta.data <- seurat_list_preserved[["Gonzalez"]]@meta.data %>% mutate(treatment = case_when(
+    sample_names %in% c("Melan_2", "Melan_3", "Lung_3") ~ "Naive",
+    TRUE ~ "Chemo"
+))
+seurat_list_preserved[["Gonzalez"]]$sample <- seurat_list_preserved[["Gonzalez"]]$sample_names
+seurat_list_preserved[["Gonzalez"]]$df <- "Gonzalez"
+
+###
+
+seurat_list_preserved[["Lee"]]@meta.data$primary <- "Lung"
+seurat_list_preserved[["Lee"]]@meta.data$treatment <- "Naive"
+seurat_list_preserved[["Lee"]]@meta.data$sample <- seurat_list_preserved[["Lee"]]@meta.data$Sample
+seurat_list_preserved[["Lee"]]@meta.data$df <- "Kim"
+
+
+seurat_list_preserved[["Inhouse"]]@meta.data$sample <- paste0(seurat_list_preserved[["Inhouse"]]@meta.data$primary_sample, "_Inhouse")
+
+seurat_list_preserved[["Inhouse"]]@meta.data$primary %>% table()
+seurat_list_preserved[["Inhouse"]]@meta.data$sample %>% table()
+seurat_list_preserved[["Inhouse"]]@meta.data$treatment <- "SRS"
+seurat_list_preserved[["Inhouse"]]@meta.data$df <- "Inhouse"
+
+
+
+add.cell.ids <- sapply(seurat_list_preserved, function(x) unique(x$df))
+seurat_obj <- merge(seurat_list_preserved[[1]],
+    y = seurat_list_preserved[2:length(seurat_list_preserved)],
+    add.cell.ids = add.cell.ids
+)
+```
+
+
+
+```{R pseudobulking of sample aggregates}
+# pseudobulk the counts based on -donor-
+pseudo_seurat <- AggregateExpression(seurat_obj, assays = "RNA", return.seurat = T, group.by = c("sample", "df", "primary", "treatment"))
+
+modules <- GetModules(reference_dataset)
+if (!is.factor(modules$module)) {
+    modules$module <- as.factor(modules$module)
+}
+
+gene_names <- modules$gene_name
+modules <- modules[rownames(modules) %in% gene_names, ]
+
+genes <- list()
+for (cur_mod in unique(modules$module)) {
+    print(cur_mod)
+    mods_df <- modules[modules$module == cur_mod, ]
+    print(head(mods_df))
+    df_sorted <- mods_df[order(mods_df[[paste0("kME_", cur_mod)]], decreasing = TRUE), ]
+    df_sorted %>% select(gene_name, module, paste0("kME_", cur_mod)) -> df_sorted
+    colnames(df_sorted) <- c("target", "source", "mor")
+    genes[[cur_mod]] <- df_sorted
+}
+
+genes[["grey"]] <- NULL
+```
+
+```{R running decouplr}
+combined_df <- bind_rows(genes)
+combined_df <- combined_df[, c(2, 1, 3)] # shuffle so they are in same order as decouplr site
+
+net <- combined_df
+mat <- pseudo_seurat[["RNA"]]$counts
+```
+
+```{R run decouplr}
+decouple_res <- decoupleR::run_gsva(
+    mat = mat,
+    network = net,
+    .source = "source",
+    .target = "target"
+)
+```
+
+```{R preparring dataset for plotting}
+group_parameter <- "Primary"
+split_parameter <- "Treatment"
+decouple_results <- decouple_res
+decouple_results <- decouple_results %>%
+    separate(condition, into = c("Sample", "Dataset", "Primary", "Treatment"), sep = "_")
+mods <- names(genes)
+
+plot_df <- decouple_results
+
+
+prim_vec <- c("Lung", "Melanoma", "Colon")
+plot_df$Primary_general <- ifelse(plot_df$Primary %in% prim_vec,
+    plot_df$Primary,
+    "Other"
+)
+
+
+val_to_num <- setNames(seq_along(unique(plot_df$Dataset)) + 20, unique(plot_df$Dataset))
+plot_df$shapes <- apply(plot_df["Dataset"], 1, function(x) val_to_num[x])
+shapes <- NULL
+plot_df$shapes <- as.factor(plot_df$shapes)
+plot_df_main <- plot_df
+```
+
+```{R define pdf}
+figure_output <- "02_scripts/presentation_figures/new/"
+pdf(paste0(figure_output, "Barplot_enrichment_GSVA_all_final.pdf"), width = 8, height = 10)
+```
+
+
+```{R plotting}
+plot_df_main <- read.csv(paste0(figure_output, "plotting_df.csv"))
+val_to_num <- setNames(seq_along(unique(plot_df_main$Dataset)) + 20, unique(plot_df_main$Dataset))
+
+colours_prim <- c("purple", "brown", "darkgreen", "darkblue")
+names(colours_prim) <- unique(plot_df_main$Primary_general)
+group_parameter <- "Primary"
+split_parameter <- "Treatment"
+plot_list <- list()
+mods <- unique(plot_df_main$source)
+for (module in paste0(mods)) {
+    print(module)
+    plot_df_main %>%
+        filter(source == module) -> plot_df
+    plot_df[[module]] <- plot_df$score
+    p <- plot_df %>% ggplot(aes(
+        x = !!sym(split_parameter), y = !!sym(module)
+    )) +
+        ggbeeswarm::geom_quasirandom(
+            aes(color = Primary_general, shape = Dataset, fill = Primary_general),
+            method = "pseudorandom",
+            size = 2.5, width = 0.25
+        ) +
+        scale_shape_manual(values = val_to_num) + # legend will show names, points get 1,2,3...
+        scale_color_manual(values = colours_prim) +
+        scale_fill_manual(values = colours_prim)
+    p <- p +
+        geom_boxplot(
+            outlier.shape = NA,
+            alpha = 0.1,
+            width = 0.3
+
+            # notch = box_notch
+        )
+    p <- p + labs(y = "-log10(p_val)", title = module)
+    p <- p + stat_compare_means(
+        comparisons = list(
+            c("SRS", "Naive"),
+            c("SRS", "Chemo")
+        ),
+        method = "wilcox.test", label = "p.signif", hide.ns = F, show.legend = F
+    )
+
+
+    plot_list[[module]] <- p
+}
+# Plot significance thresholds
+# ns: p > 0.05
+
+# *: p <= 0.05
+
+# **: p <= 0.01
+
+# ***: p <= 0.001
+
+# ****: p <= 0.0001
+
+# pdf(paste0(figure_output, "Barplot_enrichment_run_wsum_all.pdf"))
+wrap_plots(plot_list, ncol = 2) + plot_layout(guides = "collect") + plot_annotation(title = "GSVA")
+dev.off()
+```
+
+
+

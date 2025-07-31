@@ -1,0 +1,100 @@
+
+---
+title: "2-C"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, fig.width = 15, fig.height = 15)
+```
+
+# Loading packages
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+# devtools::install_github("immunogenomics/lisi")
+# library(lisi)
+library(dplyr)
+library(ggplot2)
+# library(purrr)
+# library(here)
+# library(tidyr)
+library(ggrepel)
+library(gridExtra)
+library(patchwork)
+library(dittoSeq)
+library(UCell)
+library(reticulate)
+
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+input_data <- "02_scripts/overview_analysis/01_Figure/data/"
+output_figs <- "02_scripts/overview_analysis/02_Figure/figs/"
+```
+
+# Loading seurat object
+```{R loading seurat}
+seurat_obj_Tcells <- readRDS(file = paste0(input_data, "processed_Tcells_annotated_Fig_2B.rds"))
+reduction_name <- "Tcells"
+seurat_obj_Tcells@meta.data <- seurat_obj_Tcells@meta.data %>%
+    mutate(primary = case_when(
+        primary_sample %in% c("CUP1") ~ "CUP",
+        primary_sample %in% c("Col1", "Col2") ~ "Col",
+        primary_sample %in% c("Lung1") ~ "Lung",
+        primary_sample %in% c("Mel1", "Mel2a", "Mel2b", "Mel3") ~ "Mel",
+        TRUE ~ "Other"
+    ))
+```
+
+
+```{R plot 1, eval = F}
+Idents(seurat_obj_Tcells) <- "cells_of_interest"
+
+VlnPlot(seurat_obj_Tcells, features = c("CXCL13"), split.by = "cells_of_interest", group.by = "primary")
+```
+
+
+```{R plot 2, eval = F}
+p1 <- VlnPlot(seurat_obj_Tcells, "nFeature_RNA", pt.size = 0.1, split.by = "primary", group.by = "cells_of_interest")
+p2 <- VlnPlot(seurat_obj_Tcells, "percent_mt", pt.size = 0.1, split.by = "primary", group.by = "cells_of_interest")
+p3 <- VlnPlot(seurat_obj_Tcells, "nCount_RNA", pt.size = 0.1, split.by = "primary", group.by = "cells_of_interest")
+grid.arrange(p1, p2, p3)
+
+library(writexl)
+seurat_obj_Tcells@meta.data %>%
+    group_by(cells_of_interest, primary) %>%
+    summarise(
+        mean_count = mean(nCount_RNA), sd_count = sd(nCount_RNA), min_count = min(nCount_RNA),
+        mean_feature = mean(nFeature_RNA), sd_feat = sd(nFeature_RNA), min_feat = min(nFeature_RNA),
+        mean_mt = mean(percent_mt), sd_mt = sd(percent_mt), max_mt = max(percent_mt), n = n()
+    ) %>%
+    write_xlsx(path = "02_scripts/overview_analysis/02_Figure/summary_stats_senescence.xlsx")
+
+
+seurat_obj_Tcells@meta.data[seurat_obj_Tcells@meta.data$nCount_RNA < 300, ] %>% nrow()
+```
+
+
+```{R plot 3}
+seurat_obj_Tcells %>% ann_T_1()
+dittoBarPlot(seurat_obj_Tcells, var = "cells_of_interest", group.by = "primary_sample", var.labels.reorder = c(2, 1))
+ggsave(filename = "02_scripts/overview_analysis/02_Figure/figs/barplot_senescence_distribution.png")
+
+plot <- dittoDimPlot(seurat_obj_Tcells, reduction.use = paste0("umap.harmony.", reduction_name), var = "cells_of_interest", do.label = F, order = "decreasing")
+plot
+ggsave(filename = "02_scripts/overview_analysis/02_Figure/figs/umap_senescence_overview.png", width = 15, height = 12)
+
+# dittoBarPlot(seurat_obj_Tcells, var = "cells_of_interest", group.by = "ann_T_1", var.labels.reorder = c(2, 1))
+# ggsave(filename = "02_scripts/overview_analysis/02_Figure/figs/barplot_senescence_distribution+cell-type.png")
+```
+
+
+```{R session}
+sessionInfo()
+```

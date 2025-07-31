@@ -1,0 +1,130 @@
+
+---
+title: "2-B"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, fig.width = 15, fig.height = 15)
+```
+
+# Loading packages
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+# devtools::install_github("immunogenomics/lisi")
+library(lisi)
+library(dplyr)
+library(ggplot2)
+library(purrr)
+library(here)
+library(tidyr)
+library(ggrepel)
+library(gridExtra)
+library(patchwork)
+library(dittoSeq)
+library(RColorBrewer)
+
+
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+input_data <- "02_scripts/overview_analysis/01_Figure/data/"
+output_figs <- "02_scripts/presentation_figures/"
+```
+
+# Loading seurat object
+```{R loading seurat}
+seurat_obj <- readRDS(file = paste0(input_data, "seurat_annotated_correctly.rds"))
+```
+
+
+```{R subsetting seurat for Tcells}
+seurat_obj_Tcells <- subset(seurat_obj, subset = ann_lvl_1_total == "T-cells")
+```
+
+```{R function for seurat preprocessing}
+seurat_pca_processing <- function(seurat_obj, reduction_name, sample_col, mt_regression = TRUE, features = 2000) {
+    seurat_obj[["RNA"]] <- split(seurat_obj[["RNA"]], f = seurat_obj@meta.data[[sample_col]])
+    seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = "vst", nfeatures = features, verbose = TRUE)
+    hvf_info <- HVFInfo(seurat_obj)
+    top_variable_genes <- hvf_info[order(hvf_info$variance.standardized, decreasing = TRUE), ]
+    top_x_genes <- rownames(top_variable_genes)[1:features]
+    VariableFeatures(seurat_obj) <- top_x_genes
+    if (mt_regression == FALSE) {
+        print("Don't regress for anything and proceed")
+        seurat_obj <- ScaleData(object = seurat_obj, features = top_x_genes, verbose = FALSE)
+    } else {
+        print("Regressing for: percent_mt")
+        seurat_obj <- ScaleData(object = seurat_obj, vars.to.regress = c("percent_mt"), features = top_x_genes, verbose = FALSE)
+    }
+    seurat_obj <- ScaleData(object = seurat_obj, vars.to.regress = c("percent_mt"), features = top_x_genes, verbose = FALSE)
+    seurat_obj <- RunPCA(
+        object = seurat_obj, nfeatures.print = 5, ndims.print = 1:2, reduction.name = paste0("pca_", reduction_name)
+    )
+    print(ElbowPlot(seurat_obj, reduction = paste0("pca_", reduction_name), ndims = 100))
+    print(VizDimLoadings(seurat_obj, dims = 1:5, reduction = paste0("pca_", reduction_name), nfeatures = 15))
+    return(seurat_obj)
+}
+seurat_harmony_processing <- function(seurat_obj, reduction_name, dims_n = 25) {
+    seurat_obj <- IntegrateLayers(
+        object = seurat_obj, method = HarmonyIntegration,
+        orig.reduction = paste0("pca_", reduction_name), new.reduction = paste0("harmony_pca.", reduction_name),
+        verbose = TRUE
+    )
+    seurat_obj <- FindNeighbors(seurat_obj, reduction = paste0("harmony_pca.", reduction_name), dims = 1:dims_n)
+    seurat_obj <- RunUMAP(seurat_obj, reduction = paste0("harmony_pca.", reduction_name), dims = 1:dims_n, reduction.name = paste0("umap.harmony.", reduction_name))
+    seurat_obj <- JoinLayers(seurat_obj)
+    return(seurat_obj)
+}
+```
+
+
+```{R prepping seurat}
+seurat_obj_Tcells <- seurat_pca_processing(seurat_obj_Tcells, reduction_name = "Tcells", sample_col = "primary_sample")
+seurat_obj_Tcells <- seurat_harmony_processing(seurat_obj_Tcells, reduction_name = "Tcells")
+```
+
+```{R saving processed seurat}
+output_data <- "02_scripts/overview_analysis/01_Figure/data/"
+saveRDS(seurat_obj_Tcells, file = paste0(output_data, "processed_Tcells_annotated_Fig_2B.rds"))
+```
+
+```{R reading in the processed data to shortcut previous steps}
+seurat_obj_Tcells <- readRDS(file = paste0(output_data, "processed_Tcells_annotated_Fig_2B.rds"))
+```
+```{R ordering plot, eval = F}
+order_plot <- c("Proliferating_CD4_Tcells", "Proliferating_CD8_Tcells", "Naive_Tcells", "Effector_memory_CD8_Tcells", "Effector_CD8_Tcells", "Exhausted_CD8_Tcells", "Texterm_CD8", "Regulatory_Tcells", "Helper_Tcells", "Active_Tcells", "IFN_response_Tcells", "NK", "GD_NKT_CD8_Tcells")
+column_interest <- "ann_T_1"
+reduction_name <- "Tcells"
+seurat_obj_Tcells@meta.data[[column_interest]] <- factor(seurat_obj_Tcells@meta.data[[column_interest]], levels = order_plot)
+plot <- dittoDimPlot(seurat_obj_Tcells, reduction.use = paste0("umap.harmony.", reduction_name), color.panel = color_lvl_3, var = "ann_T_1", do.label = F, order = "decreasing")
+plot
+```
+
+```{R plotting good}
+order_plot <- c("Proliferating_CD4_Tcells", "Proliferating_CD8_Tcells", "Naive_Tcells", "Effector_memory_CD8_Tcells", "Effector_CD8_Tcells", "Exhausted_CD8_Tcells", "Texterm_CD8", "Regulatory_Tcells", "Helper_Tcells", "Active_Tcells", "IFN_response_Tcells", "NK", "GD_NKT_CD8_Tcells")
+color_lvl_3 <- c("#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4", "#46f0f0", "#f032e6", "#bcf60c", "#fabebe", "#008080", "#e6beff", "#9a6324", "#fffac8", "#800000", "#aaffc3", "#808000", "#ffd8b1", "#000075", "#808080", "#ffffff", "#000000")
+# Colname to plot
+Idents(seurat_obj_Tcells) <- "ann_T_1"
+Idents(seurat_obj_Tcells) <- droplevels(Idents(seurat_obj_Tcells))
+
+seurat_obj_Tcells@active.ident <- factor(seurat_obj_Tcells@active.ident,
+    levels = order_plot
+)
+DimPlot(seurat_obj_Tcells, reduction = paste0("umap.harmony.", reduction_name), cols = color_lvl_3) & NoAxes() & NoLegend()
+# ggsave(file = paste0(output_figs, "B_fig2.png"), width = 8, height = 8)
+```
+```{R saving plot, eval = F}
+ggsave(plot, file = paste0(output_figs, "B_fig2.png"), width = 10, height = 10)
+```
+
+
+```{R sessioninfo}
+sessionInfo()
+```

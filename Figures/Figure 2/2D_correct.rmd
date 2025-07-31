@@ -1,0 +1,59 @@
+
+---
+title: "2-C"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, fig.width = 15, fig.height = 15)
+```
+
+# Loading packages
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+# devtools::install_github("immunogenomics/lisi")
+# library(lisi)
+library(dplyr)
+library(ggplot2)
+# library(purrr)
+# library(here)
+# library(tidyr)
+library(ggrepel)
+library(gridExtra)
+library(patchwork)
+library(dittoSeq)
+library(UCell)
+library(reticulate)
+
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+input_data <- "02_scripts/overview_analysis/01_Figure/data/"
+output_figs <- "02_scripts/overview_analysis/02_Figure/figs/"
+```
+
+# Loading seurat object
+```{R loading seurat}
+seurat_obj_Tcells <- readRDS(file = paste0(input_data, "processed_Tcells_annotated_Fig_2B.rds"))
+```
+
+
+
+```{R plotting}
+feature_vec <- c("CD8A", "CD3E", "CD3D", "CD4", "TOP2A", "MKI67", "CXCL13", "LAG3", "IL7R")
+FeaturePlot(seurat_obj_Tcells, features = feature_vec, order = TRUE, reduction = "umap.harmony.Tcells") & NoAxes()
+ggsave(filename = paste0(output_figs, "2D_umap_feature_overview.png"), width = 20, height = 15)
+
+vln <- VlnPlot(seurat_obj_Tcells, features = c("percent_mt", "nCount_RNA", "nFeature_RNA"), cols = color_lvl_3, log = T) & theme(axis.text = element_text(size = 15))
+ggsave(vln, file = paste0(output_figs, "qc_T.png"), height = 10, width = 15)
+```
+
+```{session}
+sessionInfo()
+```

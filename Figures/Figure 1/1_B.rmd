@@ -1,0 +1,99 @@
+
+
+
+---
+title: "1-D"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, fig.width = 15, fig.height = 15)
+```
+
+# Loading packages
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+# devtools::install_github("immunogenomics/lisi")
+library(lisi)
+library(dplyr)
+library(ggplot2)
+library(purrr)
+library(here)
+library(tidyr)
+library(ggrepel)
+library(gridExtra)
+library(patchwork)
+library(dittoSeq)
+library(RColorBrewer)
+
+
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+input_data <- "02_scripts/overview_analysis/01_Figure/data/"
+output_figs <- "02_scripts/presentation_figures/"
+```
+
+# Loading seurat object
+```{R loading seurat}
+seurat_obj <- readRDS(file = paste0(input_data, "seurat_annotated_correctly.rds"))
+```
+
+```{R subsetting for immune}
+seurat_obj <- subset(seurat_obj, subset = ann_general_immune %in% c("Not-annotated"), invert = TRUE)
+```
+
+
+```{R 1d}
+reduction_name <- "Plotting_general_immune"
+sample_col <- "primary_sample"
+Idents(seurat_obj) <- "ann_general_immune"
+features <- 2000
+
+seurat_obj[["RNA"]] <- split(seurat_obj[["RNA"]], f = seurat_obj@meta.data[[sample_col]])
+seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = "vst", nfeatures = features, verbose = TRUE)
+hvf_info <- HVFInfo(seurat_obj)
+top_variable_genes <- hvf_info[order(hvf_info$variance.standardized, decreasing = TRUE), ]
+top_x_genes <- rownames(top_variable_genes)[1:features]
+VariableFeatures(seurat_obj) <- top_x_genes
+seurat_obj <- ScaleData(object = seurat_obj, vars.to.regress = c("percent_mt"), features = top_x_genes, verbose = FALSE)
+seurat_obj <- RunPCA(
+    object = seurat_obj, nfeatures.print = 5, ndims.print = 1:2, reduction.name = paste0("pca_", reduction_name)
+)
+print(ElbowPlot(seurat_obj, reduction = paste0("pca_", reduction_name), ndims = 100))
+print(VizDimLoadings(seurat_obj, dims = 1:5, reduction = paste0("pca_", reduction_name), nfeatures = 15))
+seurat_obj <- FindNeighbors(seurat_obj, reduction = paste0("pca_", reduction_name), dims = 1:25) #
+seurat_obj <- RunUMAP(seurat_obj, reduction = paste0("pca_", reduction_name), dims = 1:25, reduction.name = paste0("umap_", reduction_name))
+
+seurat_obj <- IntegrateLayers(
+    object = seurat_obj, method = HarmonyIntegration,
+    orig.reduction = paste0("pca_", reduction_name), new.reduction = paste0("harmony_pca.", reduction_name),
+    verbose = TRUE
+)
+seurat_obj <- FindNeighbors(seurat_obj, reduction = paste0("harmony_pca.", reduction_name), dims = 1:25)
+seurat_obj <- RunUMAP(seurat_obj, reduction = paste0("harmony_pca.", reduction_name), dims = 1:25, reduction.name = paste0("umap.harmony.", reduction_name))
+seurat_obj <- JoinLayers(seurat_obj)
+```
+
+
+```{R plotting umap}
+color_lvl_2 <- brewer.pal(n = 9, name = "Set3")
+DimPlot(seurat_obj, reduction = paste0("umap.harmony.", reduction_name), cols = color_lvl_2) & NoLegend() & NoAxes()
+ggsave(file = paste0(output_figs, "C_umap_of_immune_annotations.png"), width = 10, height = 10)
+
+plot_general_ann <- dittoDimPlot(seurat_obj, reduction.use = paste0("umap.harmony.", reduction_name), color.panel = color_lvl_2, var = "ann_general_immune", do.label = F)
+plot_general_ann
+```
+
+```{R saving plot}
+ggsave(plot_general_ann, filename = paste0(output_figs, "D_figure.png"))
+```
+
+```{R sessioninfo}
+sessionInfo()
+```

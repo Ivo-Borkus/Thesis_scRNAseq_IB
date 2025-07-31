@@ -1,0 +1,321 @@
+---
+title: "Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+params:
+    dataset_name: "Lee"
+    cell_type: "T_cells"
+
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, fig.width = 20, fig.height = 20)
+```
+
+
+# Loading libraries and setting directories
+```{R loading libraries, include = F, echo = T}
+library(Seurat)
+
+# plotting and data science packages
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+library(pheatmap)
+# co-expression network analysis packages:
+library(WGCNA)
+library(hdWGCNA)
+library(knitr)
+# using the cowplot theme for ggplot
+theme_set(theme_cowplot())
+# devtools::install_github('smorabit/hdWGCNA', ref='dev')
+
+# set random seed for reproducibility
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+source("02_scripts/101_processing_external_datasets/qc_functions.R")
+set.seed(1123)
+# optionally enable multithreading
+enableWGCNAThreads(nThreads = 10)
+library(NetRep)
+```
+
+```{R load reference}
+data_input <- "02_scripts/overview_analysis/01_Figure/data/"
+reference_dataset <- readRDS(file = paste0(data_input, "seurat_wgcna_annotated.rds"))
+
+GetMEs(reference_dataset, TRUE) %>% head()
+```
+
+```{R settings}
+figure_output <- "02_scripts/overview_analysis/04_figure/final_figs/"
+cell_type_of_interest <- "T_cells"
+col_cell_type <- "generalised_ann_1"
+wgcna_name_ref <- GetActiveWGCNAName(reference_dataset)
+wgcna_name_query <- "Subset_analysis"
+```
+
+```{R module preservation analysis }
+# samples_used:
+names_vec <- c(
+    "MBM01_Biermann", "MBM02_Biermann", "MBM03_Biermann",
+    "MBM04_Biermann", "MBM05_Biermann", "Melan_1_Gonzalez",
+    "Melan_3_Gonzalez", "Breast_1_Gonzalez", "Breast_2_Gonzalez",
+    "Lung_2_Gonzalez", "Lung_3_Gonzalez", "Ova_2_Gonzalez",
+    "Colon_1_Gonzalez", "unknown_1_Gonzalez", "NS_04_Lee",
+    "NS_02_Lee", "NS_19_Lee", "NS_13_Lee",
+    "NS_07_Lee", "NS_16_Lee", "NS_17_Lee",
+    "NS_06_Lee", "NS_03_Lee"
+)
+primary_vec <- c(rep("Melan", 7), "Breast", "Breast", "Lung", "Lung", "Ova", "Colon", "Unknown", rep("Lung", 9))
+names(primary_vec) <- names_vec
+seurat_list_preserved <- lapply(names_vec, function(sample_id) {
+    seurat_query <- readRDS(file = paste0("03_processing/101_processing_exernal/data/optimising_hdWGCNA/query_processed_", sample_id, ".rds"))
+    seurat_query
+})
+names(seurat_list_preserved) <- names_vec
+```
+
+
+# Extracting preservation information from Netrep resolutions
+
+```{R cleaned code}
+final_df <- data.frame()
+for (sample_id in names(seurat_list_preserved)) {
+    seurat_obj <- seurat_list_preserved[[sample_id]]
+    wgcna_name_query <- GetActiveWGCNAName(seurat_obj)
+
+    mod_pres <- GetModulePreservation(seurat_obj, "testing_NetRep", wgcna_name_query)
+    p_val <- mod_pres$p.value
+
+    plot_df <- reshape2::melt(mod_pres$p.value)
+    plot_df$Var2 <- paste0("pval.", plot_df$Var2)
+    plot_df$type <- "pval"
+    plot_df1 <- plot_df
+
+    fdrs <- p.adjust(plot_df1$value, "fdr")
+    plot_df_fdrs <- plot_df1
+    plot_df_fdrs$value <- fdrs
+    plot_df_fdrs$type <- "fdr"
+
+
+    plot_df <- rbind(plot_df1, plot_df_fdrs) %>%
+        dplyr::rename(module = Var1, stat = Var2)
+    features <- c("cor.cor", "cor.degree", "avg.contrib", "cor.contrib", "avg.weight", "coherence", "avg.cor")
+    # features <- c("cor.cor", "cor.degree", "avg.contrib", "cor.contrib")
+    plot_df <- plot_df %>% subset(stat %in% paste0("pval.", features))
+    plot_df <- plot_df %>% subset(type == "fdr")
+    label <- bquote("-log"[10] ~ "(FDR)")
+    plot_df$sample_id <- sample_id
+    plot_df$primary <- primary_vec[[sample_id]]
+    final_df <- rbind(final_df, plot_df)
+    # label <- bquote("-log"[10] ~ "(Avg. FDR)")
+}
+
+final_df$module <- factor(as.character(final_df$module), levels = unique(as.character(final_df$module)))
+seurat_obj <- seurat_list_preserved[[1]]
+mod_pres <- GetModulePreservation(seurat_obj, "testing_NetRep", wgcna_name_query)
+mod_sizes <- mod_pres$nVarsPresent
+final_df$mod_size <- mod_sizes[final_df$module]
+
+modules <- GetModules(reference_dataset, wgcna_name_ref)
+mod_colors <- modules %>%
+    dplyr::select(module, color) %>%
+    dplyr::distinct()
+mod_cp <- mod_colors$color
+names(mod_cp) <- mod_colors$module
+```
+
+
+# Figure 4 C 
+
+Figure 4 A is below, but Z sample scoring is a whole different cookie.
+
+```{R heatmap_subset}
+features <- c("cor.cor", "cor.degree", "avg.contrib", "cor.contrib")
+# final_df_subset <- subset(final_df, module %in% c("T_cells-M3", "T_cells-M5"))
+final_df_subset <- subset(final_df, stat %in% paste0("pval.", features))
+df <- final_df_subset
+result <- df %>%
+    mutate(score = ifelse(value < 0.05, 1, 0)) %>% # Step 1: Convert to 1 or 0
+    group_by(sample_id, module, primary) %>% # Step 2: Group by sample/module
+    summarise(total_score = sum(score), .groups = "drop")
+
+heatmap_df_pre <- result %>%
+    pivot_wider(names_from = module, values_from = total_score)
+
+plotting_df <- as.data.frame(heatmap_df_pre)
+row.names(plotting_df) <- plotting_df$sample_id
+plotting_df$sample_id <- NULL
+plotting_df$primary <- NULL
+
+# Basic heatmap
+
+pheatmap(as.matrix(plotting_df),
+    scale = "none",
+    color = colorRampPalette(c("white", "yellow", "red"))(10),
+    cluster_rows = TRUE, # set to TRUE if you want clustering
+    cluster_cols = TRUE,
+    main = "Significance Score Heatmap per sample out of 4",
+    show_colnames = TRUE,
+    show_rownames = TRUE
+) -> heatmap
+figure_output <- "02_scripts/presentation_figures/new/"
+save_pheatmap_png(heatmap, paste0(figure_output, "Heatmap_sample_p_4.png"))
+heatmap
+```
+
+
+
+# summary scores
+
+# Code is copied and slightly adjusted from Netrep, as hdWGCNA did not have an implementation for This
+
+```{R setting the stage for z_summary}
+library(statmod)
+final_df <- data.frame(matrix(ncol = 6, nrow = 0))
+seurat_obj <- seurat_list_preserved[["MBM05_Biermann"]]
+mod_pres <- GetModulePreservation(seurat_obj, "testing_NetRep", wgcna_name_query)
+nulls <- mod_pres$nulls
+colnames(final_df) <- row.names(nulls)
+
+
+alternative <- "greater"
+validAlts <- c("two.sided", "less", "greater")
+altMatch <- pmatch(alternative, validAlts)
+
+statNames <- c(
+    "avg.weight", "coherence", "cor.cor", "cor.degree",
+    "cor.contrib", "avg.cor", "avg.contrib"
+)
+
+density_stats <- c("coherence", "avg.weight", "avg.cor", "avg.contrib")
+connectivity_stats <- c("cor.contrib", "cor.cor", "cor.degree")
+```
+
+
+```{R extracting Z summary scores}
+for (sample_id in names(seurat_list_preserved)) {
+    seurat_obj <- seurat_list_preserved[[sample_id]]
+    mod_pres <- GetModulePreservation(seurat_obj, "testing_NetRep", wgcna_name_query)
+    # p_val <- mod_pres$p.value
+    nulls <- mod_pres$nulls
+    observed <- mod_pres$observed
+    nVarsPresent <- mod_pres$nVarsPresent
+    totalSize <- mod_pres$totalSize
+
+    p.values <- matrix(NA, nrow(nulls), ncol(nulls), dimnames = dimnames(observed))
+    z.scores <- matrix(NA, nrow(nulls), ncol(nulls), dimnames = dimnames(observed))
+
+
+    for (modules in seq_len(nrow(p.values))) {
+        for (stats in seq_len(ncol(p.values))) {
+            # If the observed value is missing, leave the p-value missing.
+            if (is.na(observed[modules, stats])) {
+                next
+            }
+
+            if (colnames(observed)[stats] %in% c("avg.weight", "coherence")) {
+                order <- FALSE
+            } else {
+                order <- TRUE
+            }
+
+
+            # This in turn affects the total number of possible permutations
+            if (order) {
+                total.nperm <- prod(totalSize:(totalSize - nVarsPresent[modules] + 1))
+            } else {
+                total.nperm <- choose(totalSize, nVarsPresent[modules])
+            }
+            # Calculate necessary components to perform any of the alternative tests
+            permuted <- sort(nulls[modules, stats, ])
+            nPerm <- length(permuted)
+            less.extreme <- length(permuted[permuted <= observed[modules, stats]])
+            more.extreme <- length(permuted[permuted >= observed[modules, stats]])
+
+            lower.pval <- permp(less.extreme, nPerm, total.nperm = total.nperm)
+            upper.pval <- permp(more.extreme, nPerm, total.nperm = total.nperm)
+            p.values[modules, stats] <- upper.pval
+            # print(more.extreme)
+
+            obs <- observed[modules, stats]
+            perm_stats <- nulls[modules, stats, ] # same as `permuted` before sorting
+
+            perm_mean <- mean(perm_stats)
+            perm_sd <- sd(perm_stats)
+
+            z_value <- (obs - perm_mean) / perm_sd
+            z.scores[modules, stats] <- z_value
+            # print(z_value)
+        }
+    }
+
+    rownames(z.scores) <- row.names(nulls)
+    colnames(z.scores) <- statNames
+
+    z_summary <- numeric(nrow(nulls))
+    names(z_summary) <- row.names(nulls)
+
+    z_density_vals <- z.scores[row.names(nulls), density_stats]
+    z_connectivity_vals <- z.scores[row.names(nulls), connectivity_stats]
+
+    Z_density <- apply(z_density_vals, 1, median, na.rm = TRUE)
+    Z_connectivity <- apply(z_connectivity_vals, 1, median, na.rm = TRUE)
+    # print(sample_id)
+    # print(Z_density[3])
+    # print(Z_connectivity[3])
+    # print("##################################3")
+    z_summary <- (Z_density + Z_connectivity) / 2
+    # z_summary[row.names(nulls)] <- Z_summary_scores
+    # as.data.frame(z_summary)
+    df <- as.data.frame(z_summary)
+    df$sample <- sample_id
+    df$primary <- primary_vec[sample_id]
+    df$module <- row.names(df)
+    final_df <- rbind(final_df, df)
+}
+```
+
+
+# figure 4 A plotting
+
+```{R heatmap}
+row.names(final_df) <- NULL
+z_summary <- NULL
+sample <- NULL
+
+heatmap_df_pre <- final_df %>%
+    pivot_wider(names_from = module, values_from = z_summary)
+
+plotting_df <- as.data.frame(heatmap_df_pre)
+row.names(plotting_df) <- plotting_df$sample
+plotting_df$sample <- NULL
+plotting_df$primary <- NULL
+mat <- pmin(pmax(as.matrix(plotting_df), -1), 10)
+# Basic heatmap
+
+
+colors_not_preserved <- c("white", "white")
+colors_likely_preserved <- c(rep("yellow", 7))
+colors_preserved <- c("red")
+
+combined_cols <- c(colors_not_preserved, colors_likely_preserved, colors_preserved)
+pheatmap(mat,
+    scale = "none",
+    color = colorRampPalette(c("white", "yellow", "red"))(10),
+    cluster_rows = TRUE, # set to TRUE if you want clustering
+    cluster_cols = TRUE,
+    main = "Z Summary Score Heatmap per sample",
+    show_colnames = TRUE,
+    show_rownames = TRUE
+) -> heatmap
+figure_output <- "02_scripts/presentation_figures"
+save_pheatmap_png(heatmap, paste0(figure_output, "Heatmap_sample_Z_score_seq.png"))
+
+heatmap
+```

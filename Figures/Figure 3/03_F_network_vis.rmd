@@ -1,0 +1,1138 @@
+---
+title: "Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+params:
+    dataset_name: "Lee"
+    cell_type: "T_cells"
+
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, fig.width = 20, fig.height = 20)
+```
+
+
+# Loading libraries and setting directories
+```{R loading libraries, include = F, echo = T}
+library(Seurat)
+
+# plotting and data science packages
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+
+# co-expression network analysis packages:
+library(WGCNA)
+library(hdWGCNA)
+library(knitr)
+library(igraph)
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+library(magrittr)
+
+# using the cowplot theme for ggplot
+theme_set(theme_cowplot())
+
+# set random seed for reproducibility
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+source("02_scripts/101_processing_external_datasets/qc_functions.R")
+set.seed(1123)
+# optionally enable multithreading
+enableWGCNAThreads(nThreads = 8)
+figure_output <- "02_scripts/overview_analysis/03_Figure/figs/"
+```
+
+
+```{R loading in data}
+seurat_obj <- readRDS(file = paste0("03_processing/101_processing_exernal/data/optimising_hdWGCNA/Inhous_hvf_5000_nnp_25_max_shared_10_seurat_processed_final.rds"))
+```
+
+```{R}
+# hubgene network
+HubGeneNetworkPlot(
+  seurat_obj,
+  n_hubs = 5, n_other=5,
+  edge_prop = 0.75,
+  mods = 'all'
+)
+```
+
+
+
+```{R plotting hub genes in umap}
+seurat_obj <- RunModuleUMAP(
+    seurat_obj,
+    n_hubs = 10, # number of hub genes to include for the UMAP embedding
+    n_neighbors = 15, # neighbors parameter for UMAP
+    min_dist = 0.1 # min distance between points in UMAP space
+)
+umap_df <- GetModuleUMAP(seurat_obj)
+
+# plot with ggplot
+ggplot(umap_df, aes(x = UMAP1, y = UMAP2)) +
+    geom_point(
+        color = umap_df$color, # color each point by WGCNA module
+        size = umap_df$kME * 3 # size of each point based on intramodular connectivity
+    ) +
+    umap_theme()
+```
+
+
+
+```{R moduleumappcode}
+seurat_obj
+sample_edges <- TRUE # TRUE if we sample edges randomly, FALSE if we take the top edges
+edge_prop <- 0.2
+label_hubs <- 5 # how many hub genes to label?
+edge.alpha <- 0.25
+vertex.label.cex <- 0.5
+label_genes <- NULL
+return_graph <- FALSE # this returns the igraph object instead of plotting
+keep_grey_edges <- TRUE
+wgcna_name <- NULL
+if (is.null(wgcna_name)) {
+    wgcna_name <- seurat_obj@misc$active_wgcna
+}
+
+# get the TOM
+TOM <- GetTOM(seurat_obj, wgcna_name)
+
+# get modules,
+modules <- GetModules(seurat_obj, wgcna_name)
+
+# get the UMAP df:
+umap_df <- GetModuleUMAP(seurat_obj, wgcna_name)
+mods <- levels(umap_df$module)
+mods <- mods[mods != "grey"]
+
+# subset the TOM:
+subset_TOM <- TOM[umap_df$gene, umap_df$gene[umap_df$hub == "hub"]]
+
+# genes to label:
+# hub_labels <- selected_modules %>% group_by(module) %>% top_n(label_hubs, wt=kME) %>% .$gene_name
+hub_list <- lapply(mods, function(cur_mod) {
+    cur <- subset(modules, module == cur_mod)
+    cur[, c("gene_name", paste0("kME_", cur_mod))] %>%
+        top_n(label_hubs) %>%
+        .$gene_name
+})
+names(hub_list) <- mods
+hub_labels <- as.character(unlist(hub_list))
+print("hub labels")
+print(hub_labels)
+print(label_genes)
+if (is.null(label_genes)) {
+    label_genes <- hub_labels
+} else {
+    if (!any(label_genes %in% umap_df$gene)) {
+        stop("Some genes in label_genes not found in the UMAP.")
+    }
+    label_genes <- unique(c(label_genes, hub_labels))
+}
+print(label_genes)
+
+# subset module df by genes in the UMAP df:
+selected_modules <- modules[umap_df$gene, ]
+selected_modules <- cbind(selected_modules, umap_df[, c("UMAP1", "UMAP2", "hub", "kME")])
+
+selected_modules$label <- ifelse(selected_modules$gene_name %in% label_genes, selected_modules$gene_name, "")
+selected_modules$fontcolor <- ifelse(selected_modules$color == "black", "gray50", "black")
+
+# set frome color
+# same color as module for all genes, black outline for the selected hub genes
+selected_modules$framecolor <- ifelse(selected_modules$gene_name %in% label_genes, "black", selected_modules$color)
+
+# melt TOM into long format
+edge_df <- subset_TOM %>% reshape2::melt()
+print(dim(edge_df))
+
+# set color of each edge based on value:
+edge_df$color <- future.apply::future_sapply(1:nrow(edge_df), function(i) {
+    gene1 <- as.character(edge_df[i, "Var1"])
+    gene2 <- as.character(edge_df[i, "Var2"])
+
+    col1 <- selected_modules[selected_modules$gene_name == gene1, "color"]
+    col2 <- selected_modules[selected_modules$gene_name == gene2, "color"]
+
+    if (col1 == col2) {
+        col <- col1
+    } else {
+        col <- "grey90"
+    }
+    col
+})
+
+# keep grey edges?
+if (!keep_grey_edges) {
+    edge_df <- edge_df %>% subset(color != "grey90")
+}
+
+# subset edges:
+groups <- unique(edge_df$color)
+if (sample_edges) {
+    # randomly sample
+    temp <- do.call(rbind, lapply(groups, function(cur_group) {
+        cur_df <- edge_df %>% subset(color == cur_group)
+        n_edges <- nrow(cur_df)
+        cur_sample <- sample(1:n_edges, round(n_edges * edge_prop))
+        cur_df[cur_sample, ]
+    }))
+} else {
+    # get top strongest edges
+    temp <- do.call(rbind, lapply(groups, function(cur_group) {
+        cur_df <- edge_df %>% subset(color == cur_group)
+        n_edges <- nrow(cur_df)
+        cur_df %>% dplyr::top_n(round(n_edges * edge_prop), wt = value)
+    }))
+}
+
+edge_df <- temp
+print(dim(edge_df))
+
+# scale edge values between 0 and 1 for each module
+edge_df <- edge_df %>%
+    group_by(color) %>%
+    mutate(value = scale01(value))
+
+# edges & vertices are plotted in igraph starting with the first row, so re-order s.t. strong edges are on bottom, all gray on the top of the table:
+edge_df <- edge_df %>% arrange(value)
+edge_df <- rbind(
+    subset(edge_df, color == "grey90"),
+    subset(edge_df, color != "grey90")
+)
+
+# set alpha of edges based on kME
+edge_df$color_alpha <- ifelse(
+    edge_df$color == "grey90",
+    alpha(edge_df$color, alpha = edge_df$value / 2),
+    alpha(edge_df$color, alpha = edge_df$value)
+)
+
+# re-order vertices so hubs are plotted on top
+selected_modules <- rbind(
+    subset(selected_modules, hub == "other"),
+    subset(selected_modules, hub != "other")
+)
+
+# re-order vertices so labeled genes are on top
+selected_modules <- rbind(
+    subset(selected_modules, label == ""),
+    subset(selected_modules, label != "")
+)
+
+# setup igraph:
+g <- igraph::graph_from_data_frame(
+    edge_df,
+    directed = FALSE,
+    vertices = selected_modules
+)
+
+# print('making net')
+# print(head(edge_df))
+# print(head(selected_modules))
+
+if (return_graph) {
+    return(g)
+}
+
+edge.alpha = 0.25
+png(paste0(figure_output, "Network_umap_hub_genes_original.png"), width = 10, height = 10, res = 600, units = "in")
+plot(
+    g,
+    layout = as.matrix(selected_modules[, c("UMAP1", "UMAP2")]),
+    edge.color=adjustcolor(igraph::E(g)$color, alpha.f=edge.alpha),
+    edge.color = adjustcolor(igraph::E(g)$color_alpha, alpha.f = edge.alpha),
+    vertex.size = igraph::V(g)$kME * 4,
+    edge.curved = 0,
+    edge.width = 0.5,
+    vertex.color = igraph::V(g)$color,
+    vertex.label = igraph::V(g)$label,
+    vertex.label.dist = 1.1,
+    vertex.label.degree = -pi / 4,
+    vertex.label.family = "Helvetica", # vertex.label.font=vertex_df$font,
+    vertex.label.font = 3,
+    vertex.label.color = igraph::V(g)$fontcolor,
+    vertex.label.cex = 0,
+    vertex.frame.color = igraph::V(g)$framecolor,
+    margin = 0
+)
+dev.off()
+```
+
+
+```{R chatgpt}
+library(tidygraph)
+tg <- as_tbl_graph(g)
+
+# UMAP layout matrix for nodes
+layout_df <- as.data.frame(selected_modules)
+layout_df <- layout_df[, c("gene_name", "UMAP1", "UMAP2")]
+colnames(layout_df) <- c("name", "x", "y")
+
+# Join layout coordinates to graph nodes
+tg <- tg %>%
+    activate(nodes) %>%
+    left_join(layout_df, by = "name")
+
+
+tg <- tg %>%
+  activate(nodes) %>%
+  mutate(
+    x = selected_modules$UMAP1,
+    y = selected_modules$UMAP2,
+    label = selected_modules$label,
+    color = selected_modules$color,
+    framecolor = selected_modules$framecolor,
+    fontcolor = selected_modules$fontcolor,
+    kME = selected_modules$kME
+  ) %>%
+  activate(edges) %>%
+  mutate(
+    color = edge_df$color,
+    color_alpha = edge_df$color_alpha,
+    value = edge_df$value
+  )
+```
+
+```{R plotting it}
+tg@nodes color %>% unique()
+
+tg
+ggraph(tg, layout = "manual", x = x, y = y) +
+    # Edges
+    geom_edge_link(color = "#E5E5E500",alpha = 0.25,
+        edge_width = 0.5, show.legend = FALSE, lineend = "round"
+    ) +
+    # scale_edge_alpha(range = c(0.1, edge.alpha)) +
+
+    # Nodes
+    geom_node_point(aes(size = kME*3 ),color =selected_modules$framecolor, show.legend = FALSE) +
+
+    # Labels
+    geom_node_label(aes(label = label),
+        repel = TRUE,
+        size = vertex.label.cex * 5, # ggplot uses different scale
+        color = V(g)$fontcolor,
+        fill = "white",
+        label.size = 0.4,
+        # label.padding = unit(0.1, "lines"),
+        fontface = "italic", max.overlaps = Inf
+    ) +
+
+    # Outline (framecolor)
+      geom_node_point(fill =selected_modules$framecolor, color =selected_modules$framecolor, shape = 21, size = V(g)$kME * 3,
+                      stroke = 0.5, fill = NA, show.legend = FALSE) +
+
+    theme_void()
+```
+
+
+
+```{R}
+# get the UMAP df and subset by genes that are in our graph
+
+umap_df <- GetModuleUMAP(seurat_obj)
+umap_layout <- umap_df[names(V(g)), ] %>% dplyr::rename(c(x = UMAP1, y = UMAP2, name = gene))
+rownames(umap_layout) <- 1:nrow(umap_layout)
+
+# create the layout
+lay <- ggraph::create_layout(g, umap_layout)
+lay$hub <- V(g)$hub
+
+modules <- GetModules(seurat_obj) %>%
+    subset(module != "grey") %>%
+    mutate(module = droplevels(module))
+mods <- levels(modules$module)
+
+# get module colors for plotting
+mod_colors <- dplyr::select(modules, c(module, color)) %>% distinct()
+mod_cp <- mod_colors$color
+names(mod_cp) <- as.character(mod_colors$module)
+
+lay <- lay %>%
+    mutate(hub = ifelse(hub == "other", "", name))
+
+
+p <- ggraph(lay) +
+    geom_edge_link(aes(alpha = 0.01, color = '#E5E5E500')) +
+    geom_node_point(data = subset(lay, hub == ""), aes(color = module, size = kME)) +
+    geom_node_point(data = subset(lay, hub != ""), aes(fill = module, size = kME), color = "black", shape = 21) +
+    scale_colour_manual(values = mod_cp) +
+    scale_fill_manual(values = mod_cp) +
+    scale_edge_colour_manual(values = mod_cp) +
+    geom_node_label(aes(label = hub), repel = TRUE, max.overlaps = Inf, fontface = "italic") +
+    NoLegend()
+
+
+png(paste0(figure_output, "Network_constructed_umap_hub_genes.png"), width = 10, height = 10, res = 600, units = "in")
+p
+dev.off()
+```
+
+
+```{R create the network}
+TOM <- GetTOM(seurat_obj)
+# graph <- TOM %>%
+#     igraph::graph_from_data_frame() %>%
+#     tidygraph::as_tbl_graph(directed = FALSE) %>%
+#     tidygraph::activate(nodes)
+
+graph <- TOM %>%
+    igraph::graph_from_adjacency_matrix(mode = "undirected", weighted = TRUE) %>%
+    tidygraph::as_tbl_graph(directed = FALSE) %>%
+    tidygraph::activate(nodes)
+
+modules <- GetModules(seurat_obj)
+mods <- levels(modules$module)
+mod <- mods[mods != "grey"]
+# add the module name to the graph:
+V(graph)$module <- modules[V(graph)$name, "module"]
+
+# get the top 25 hub genes for each module
+hub_genes <- GetHubGenes(seurat_obj, n_hubs = 25) %>% .$gene_name
+V(graph)$hub <- ifelse(V(graph)$name %in% hub_genes, V(graph)$name, "")
+
+p <- ggraph(graph) +
+    geom_edge_link(aes(alpha = weight), color = "grey") +
+    geom_node_point(aes(color = module)) +
+    geom_node_label(aes(label = name), repel = TRUE, max.overlaps = Inf, fontface = "italic") +
+    scale_colour_manual(values = mod_cp)
+p
+```
+
+```{R}
+# get the UMAP df and subset by genes that are in our graph
+umap_df <- GetModuleUMAP(seurat_obj)
+
+p <- ggraph(graph) +
+    geom_edge_link(aes(alpha = weight, color = edge_color)) +
+    geom_node_point(aes(color = module)) +
+    geom_node_label(aes(label = hub), repel = TRUE, max.overlaps = Inf, fontface = "italic") +
+    scale_colour_manual(values = mod_cp) +
+    scale_edge_colour_manual(values = mod_cp)
+
+p
+umap_layout <- umap_df[names(V(graph)), ] %>% dplyr::rename(c(x = UMAP1, y = UMAP2, name = gene))
+rownames(umap_layout) <- 1:nrow(umap_layout)
+
+# create the layout
+lay <- ggraph::create_layout(graph, umap_layout)
+lay$hub <- V(graph)$hub
+
+p <- ggraph(lay) +
+    geom_edge_link(aes(alpha = weight, color = edge_color)) +
+    geom_node_point(data = subset(lay, hub == ""), aes(color = module, size = kME)) +
+    geom_node_point(data = subset(lay, hub != ""), aes(fill = module, size = kME), color = "black", shape = 21) +
+    scale_colour_manual(values = mod_cp) +
+    scale_fill_manual(values = mod_cp) +
+    scale_edge_colour_manual(values = mod_cp) +
+    geom_node_label(aes(label = hub), repel = TRUE, max.overlaps = Inf, fontface = "italic") +
+    NoLegend()
+
+
+p
+```
+
+```{R, eval = F}
+# hubgene network
+HubGeneNetworkPlot(
+    seurat_obj,
+    n_hubs = 3, n_other = 5,
+    edge_prop = 0.75,
+    mods = "all"
+)
+
+modules <- GetModules(seurat_obj)
+mods <- levels(modules$module)
+mods <- mods[mods != "grey"]
+
+# hubgene network
+HubGeneNetworkPlot(
+    seurat_obj,
+    n_hubs = 1, n_other = 2,
+    edge_prop = 0.75,
+    mods = mods[1:2] # only select 5 modules
+)
+```
+
+```{R}
+# get the hub gene UMAP table from the seurat object
+umap_df <- GetModuleUMAP(seurat_obj)
+
+# plot with ggplot
+ggplot(umap_df, aes(x = UMAP1, y = UMAP2)) +
+    geom_point(
+        color = umap_df$color, # color each point by WGCNA module
+        size = umap_df$kME * 3 # size of each point based on intramodular connectivity
+    ) +
+    umap_theme()
+```
+
+
+
+```{R}
+# subset to only keep edges between genes in the same module
+cur_network <- cur_network_full %>%
+    subset(module1 == module2)
+
+# make the graph object with tidygraph
+graph <- cur_network %>%
+    igraph::graph_from_data_frame() %>%
+    tidygraph::as_tbl_graph(directed = FALSE) %>%
+    tidygraph::activate(nodes)
+
+# add the module name to the graph:
+V(graph)$module <- modules[V(graph)$name, "module"]
+
+# get the top 25 hub genes for each module
+hub_genes <- GetHubGenes(seurat_obj, n_hubs = 25) %>% .$gene_name
+V(graph)$hub <- ifelse(V(graph)$name %in% hub_genes, V(graph)$name, "")
+
+# make the plot with gggraph
+p <- ggraph(graph) +
+    geom_edge_link(aes(alpha = weight, color = edge_color)) +
+    geom_node_point(aes(color = module)) +
+    geom_node_label(aes(label = hub), repel = TRUE, max.overlaps = Inf, fontface = "italic") +
+    scale_colour_manual(values = mod_cp) +
+    scale_edge_colour_manual(values = mod_cp) +
+    NoLegend()
+
+p
+```
+```{R}
+# make the graph object with tidygraph
+graph <- cur_network %>%
+    igraph::graph_from_data_frame() %>%
+    tidygraph::as_tbl_graph(directed = FALSE) %>%
+    tidygraph::activate(nodes)
+
+# add the module name to the graph:
+V(graph)$module <- modules[V(graph)$name, "module"]
+
+# get the top 25 hub genes for each module
+hub_genes <- GetHubGenes(seurat_obj, n_hubs = 25) %>% .$gene_name
+V(graph)$hub <- ifelse(V(graph)$name %in% hub_genes, V(graph)$name, "")
+
+
+umap_df <- GetModuleUMAP(seurat_obj)
+
+umap_layout <- umap_df[names(V(graph)), ] %>% dplyr::rename(c(x = UMAP1, y = UMAP2, name = gene))
+rownames(umap_layout) <- 1:nrow(umap_layout)
+
+# create the layout
+lay <- ggraph::create_layout(graph, umap_layout)
+lay$hub <- V(graph)$hub
+
+p <- ggraph(lay) +
+    geom_edge_link(aes(alpha = weight, color = edge_color)) +
+    geom_node_point(data = subset(lay, hub == ""), aes(color = module, size = kME)) +
+    geom_node_point(data = subset(lay, hub != ""), aes(fill = module, size = kME), color = "black", shape = 21) +
+    scale_colour_manual(values = mod_cp) +
+    scale_fill_manual(values = mod_cp) +
+    scale_edge_colour_manual(values = mod_cp) +
+    geom_node_label(aes(label = hub), repel = TRUE, max.overlaps = Inf, fontface = "italic") +
+    NoLegend()
+
+
+p
+```
+
+
+```{R plotting umpa}
+ModuleUMAPPlot(
+    seurat_obj,
+    edge.alpha = 0.25,
+    sample_edges = TRUE,
+    edge_prop = 0.1, # proportion of edges to sample (20% here)
+    label_hubs = 3, # how many hub genes to plot per module?
+    keep_grey_edges = FALSE
+)
+```
+
+```{R}
+mods <- "all"
+n_hubs <- 6
+n_other <- 3
+sample_edges <- TRUE
+edge_prop <- 0.75
+return_graph <- FALSE
+edge.alpha <- 0.25
+vertex.label.cex <- 0.5
+hub.vertex.size <- 4
+other.vertex.size <- 1
+wgcna_name <- NULL
+
+seurat_obj
+wgcna_name <- GetActiveWGCNAName(seurat_obj)
+# get data from active assay if wgcna_name is not given
+
+# get modules, MEs:
+MEs <- GetMEs(seurat_obj, wgcna_name)
+modules <- GetModules(seurat_obj, wgcna_name)
+
+# using all modules?
+if (all("all" %in% mods)) {
+    mods <- levels(modules$module)
+    mods <- mods[mods != "grey"]
+} else {
+    # check that the modules are present
+    if (!all(mods %in% unique(as.character(modules$module)))) {
+        stop(paste0("Some selected modules are not found in wgcna_name: ", wgcna_name))
+    }
+    modules <- modules %>% subset(module %in% mods)
+}
+
+# get TOM
+TOM <- GetTOM(seurat_obj, wgcna_name)
+
+# get hub genes:
+hub_list <- lapply(mods, function(cur_mod) {
+    cur <- subset(modules, module == cur_mod)
+    cur[, c("gene_name", paste0("kME_", cur_mod))] %>%
+        top_n(n_hubs) %>%
+        .$gene_name
+})
+names(hub_list) <- mods
+
+# sample the same number of genes in each module
+other_genes <- modules %>%
+    subset(!(gene_name %in% unlist(hub_list))) %>%
+    group_by(module) %>%
+    sample_n(n_other, replace = TRUE) %>%
+    .$gene_name %>%
+    unique()
+
+# subset TOM by the selected genes:
+selected_genes <- c(unlist(hub_list), other_genes)
+selected_modules <- modules %>% subset(gene_name %in% selected_genes)
+subset_TOM <- TOM[selected_genes, selected_genes]
+
+# setup for network plot
+selected_modules$geneset <- ifelse(
+    selected_modules$gene_name %in% other_genes, "other", "hub"
+)
+selected_modules$size <- ifelse(selected_modules$geneset == "hub", hub.vertex.size, other.vertex.size)
+selected_modules$label <- ifelse(selected_modules$geneset == "hub", as.character(selected_modules$gene_name), "")
+selected_modules$fontcolor <- ifelse(selected_modules$color == "black", "gray50", "black")
+
+# make sure all nodes have at least one edge!!
+edge_cutoff <- min(sapply(1:nrow(subset_TOM), function(i) {
+    max(subset_TOM[i, ])
+}))
+edge_df <- reshape2::melt(subset_TOM) %>% subset(value >= edge_cutoff)
+
+edge_df$color <- future.apply::future_sapply(1:nrow(edge_df), function(i) {
+    gene1 <- as.character(edge_df[i, "Var1"])
+    gene2 <- as.character(edge_df[i, "Var2"])
+
+    col1 <- modules %>%
+        subset(gene_name == gene1) %>%
+        .$color
+    col2 <- modules %>%
+        subset(gene_name == gene2) %>%
+        .$color
+
+    if (col1 == col2) {
+        col <- col1
+    } else {
+        col <- "grey90"
+    }
+    col
+})
+
+# subset edges:
+groups <- unique(edge_df$color)
+print(groups)
+if (sample_edges) {
+    # randomly sample
+    temp <- do.call(rbind, lapply(groups, function(cur_group) {
+        cur_df <- edge_df %>% subset(color == cur_group)
+        n_edges <- nrow(cur_df)
+        cur_sample <- sample(1:n_edges, round(n_edges * edge_prop))
+        cur_df[cur_sample, ]
+    }))
+} else {
+    # get top strongest edges
+    temp <- do.call(rbind, lapply(groups, function(cur_group) {
+        cur_df <- edge_df %>% subset(color == cur_group)
+        n_edges <- nrow(cur_df)
+        cur_df %>% dplyr::top_n(round(n_edges * edge_prop), wt = value)
+    }))
+}
+
+edge_df <- temp
+
+# scale edge values between 0 and 1 for each module
+edge_df <- edge_df %>%
+    group_by(color) %>%
+    mutate(value = scale01(value))
+
+edge_df$color <- sapply(1:nrow(edge_df), function(i) {
+    a <- edge_df$value[i]
+    # if(edge_df$value[i] < 0.05){a=0.05}
+    alpha(edge_df$color[i], alpha = a)
+})
+
+
+
+g <- igraph::graph_from_data_frame(
+    edge_df,
+    directed = FALSE,
+    vertices = selected_modules
+)
+
+l <- igraph::layout_with_fr(g)
+
+if (return_graph) {
+    return(g)
+}
+
+plot(
+    g,
+    layout = l,
+    edge.color = adjustcolor(igraph::E(g)$color, alpha.f = edge.alpha),
+    vertex.size = igraph::V(g)$size,
+    edge.curved = 0,
+    edge.width = 0.5,
+    vertex.color = igraph::V(g)$color,
+    vertex.frame.color = igraph::V(g)$color,
+    vertex.label = igraph::V(g)$label,
+    vertex.label.family = "Helvetica", # vertex.label.font=vertex_df$font,
+    vertex.label.font = 3,
+    vertex.label.color = igraph::V(g)$fontcolor,
+    vertex.label.cex = vertex.label.cex,
+)
+```
+
+
+```{R}
+seurat_obj
+sample_edges <- TRUE # TRUE if we sample edges randomly, FALSE if we take the top edges
+edge_prop <- 0.1
+label_hubs <- 5 # how many hub genes to label?
+edge.alpha <- 0.25
+vertex.label.cex <- 0.5
+label_genes <- NULL
+return_graph <- FALSE # this returns the igraph object instead of plotting
+keep_grey_edges <- TRUE
+wgcna_name <- NULL
+if (is.null(wgcna_name)) {
+    wgcna_name <- seurat_obj@misc$active_wgcna
+}
+
+# get the TOM
+TOM <- GetTOM(seurat_obj, wgcna_name)
+
+# get modules,
+modules <- GetModules(seurat_obj, wgcna_name)
+
+# get the UMAP df:
+umap_df <- GetModuleUMAP(seurat_obj, wgcna_name)
+mods <- levels(umap_df$module)
+mods <- mods[mods != "grey"]
+
+# subset the TOM:
+subset_TOM <- TOM[umap_df$gene, umap_df$gene[umap_df$hub == "hub"]]
+
+# genes to label:
+# hub_labels <- selected_modules %>% group_by(module) %>% top_n(label_hubs, wt=kME) %>% .$gene_name
+hub_list <- lapply(mods, function(cur_mod) {
+    cur <- subset(modules, module == cur_mod)
+    cur[, c("gene_name", paste0("kME_", cur_mod))] %>%
+        top_n(label_hubs) %>%
+        .$gene_name
+})
+names(hub_list) <- mods
+hub_labels <- as.character(unlist(hub_list))
+print("hub labels")
+print(hub_labels)
+print(label_genes)
+if (is.null(label_genes)) {
+    label_genes <- hub_labels
+} else {
+    if (!any(label_genes %in% umap_df$gene)) {
+        stop("Some genes in label_genes not found in the UMAP.")
+    }
+    label_genes <- unique(c(label_genes, hub_labels))
+}
+print(label_genes)
+
+# subset module df by genes in the UMAP df:
+selected_modules <- modules[umap_df$gene, ]
+selected_modules <- cbind(selected_modules, umap_df[, c("UMAP1", "UMAP2", "hub", "kME")])
+
+selected_modules$label <- ifelse(selected_modules$gene_name %in% label_genes, selected_modules$gene_name, "")
+selected_modules$fontcolor <- ifelse(selected_modules$color == "black", "gray50", "black")
+
+# set frome color
+# same color as module for all genes, black outline for the selected hub genes
+selected_modules$framecolor <- ifelse(selected_modules$gene_name %in% label_genes, "black", selected_modules$color)
+
+# melt TOM into long format
+edge_df <- subset_TOM %>% reshape2::melt()
+print(dim(edge_df))
+
+# set color of each edge based on value:
+edge_df$color <- future.apply::future_sapply(1:nrow(edge_df), function(i) {
+    gene1 <- as.character(edge_df[i, "Var1"])
+    gene2 <- as.character(edge_df[i, "Var2"])
+
+    col1 <- selected_modules[selected_modules$gene_name == gene1, "color"]
+    col2 <- selected_modules[selected_modules$gene_name == gene2, "color"]
+
+    if (col1 == col2) {
+        col <- col1
+    } else {
+        col <- "grey90"
+    }
+    col
+})
+
+# keep grey edges?
+if (!keep_grey_edges) {
+    edge_df <- edge_df %>% subset(color != "grey90")
+}
+
+# subset edges:
+groups <- unique(edge_df$color)
+if (sample_edges) {
+    # randomly sample
+    temp <- do.call(rbind, lapply(groups, function(cur_group) {
+        cur_df <- edge_df %>% subset(color == cur_group)
+        n_edges <- nrow(cur_df)
+        cur_sample <- sample(1:n_edges, round(n_edges * edge_prop))
+        cur_df[cur_sample, ]
+    }))
+} else {
+    # get top strongest edges
+    temp <- do.call(rbind, lapply(groups, function(cur_group) {
+        cur_df <- edge_df %>% subset(color == cur_group)
+        n_edges <- nrow(cur_df)
+        cur_df %>% dplyr::top_n(round(n_edges * edge_prop), wt = value)
+    }))
+}
+
+
+# set alpha of edges based on kME
+edge_df$color_alpha <- ifelse(
+    edge_df$color == "grey90",
+    alpha(edge_df$color, alpha = edge_df$value / 2),
+    alpha(edge_df$color, alpha = edge_df$value)
+)
+
+# re-order vertices so hubs are plotted on top
+selected_modules <- rbind(
+    subset(selected_modules, hub == "other"),
+    subset(selected_modules, hub != "other")
+)
+
+# re-order vertices so labeled genes are on top
+selected_modules <- rbind(
+    subset(selected_modules, label == ""),
+    subset(selected_modules, label != "")
+)
+
+# setup igraph:
+g <- igraph::graph_from_data_frame(
+    edge_df,
+    directed = FALSE,
+    vertices = selected_modules
+)
+
+# print('making net')
+# print(head(edge_df))
+# print(head(selected_modules))
+
+if (return_graph) {
+    return(g)
+}
+png(filename = paste0(figure_output, "network_constructed_plot_hub_genes.png"), width = 10, height = 10, res = 300, units = "in")
+plot(
+    g,
+    layout = as.matrix(selected_modules[, c("UMAP1", "UMAP2")]),
+    edge.color = adjustcolor(igraph::E(g)$color, alpha.f = edge.alpha),
+    edge.color = adjustcolor(igraph::E(g)$color_alpha, alpha.f = edge.alpha),
+    vertex.size = igraph::V(g)$kME * 3,
+    edge.curved = 0,
+    edge.width = 0.5,
+    vertex.color = igraph::V(g)$color,
+    vertex.label = igraph::V(g)$label,
+    vertex.label.dist = 1.1,
+    vertex.label.degree = -pi / 4,
+    vertex.label.family = "Helvetica", # vertex.label.font=vertex_df$font,
+    vertex.label.font = 3,
+    vertex.label.color = igraph::V(g)$fontcolor,
+    vertex.label.cex = 0,
+    vertex.frame.color = igraph::V(g)$framecolor,
+    margin = 0
+)
+# par(mar = c(1, 1, 1, 1))
+# graphics.off()
+# par("mar")
+dev.off()
+```
+
+```{R}
+# get modules and TOM from the seurat obj
+modules <- GetModules(seurat_obj) %>%
+    subset(module != "grey") %>%
+    mutate(module = droplevels(module))
+mods <- levels(modules$module)
+TOM <- GetTOM(seurat_obj)
+
+# get module colors for plotting
+mod_colors <- dplyr::select(modules, c(module, color)) %>% distinct()
+mod_cp <- mod_colors$color
+names(mod_cp) <- as.character(mod_colors$module)
+
+cur_TOM <- TOM
+```
+
+```{R}
+graph <- cur_TOM %>%
+    igraph::graph_from_adjacency_matrix(mode = "undirected", weighted = TRUE) %>%
+    tidygraph::as_tbl_graph(directed = FALSE) %>%
+    tidygraph::activate(nodes)
+
+# add the module name to the graph:
+V(graph)$module <- modules[V(graph)$name, "module"]
+
+# make the plot with gggraph
+p <- ggraph(graph) +
+    geom_edge_link(aes(alpha = weight), color = "grey") +
+    geom_node_point(aes(color = module)) +
+    geom_node_label(aes(label = name), repel = TRUE, max.overlaps = Inf, fontface = "italic") +
+    scale_colour_manual(values = mod_cp)
+
+p
+```
+```{R}
+# only keep the upper triangular part of the TOM:
+cur_TOM[upper.tri(cur_TOM)] <- NA
+
+# cast the network from wide to long format
+cur_network <- cur_TOM %>%
+    reshape2::melt() %>%
+    dplyr::rename(gene1 = Var1, gene2 = Var2, weight = value) %>%
+    subset(!is.na(weight))
+
+# get the module & color info for gene1
+temp1 <- dplyr::inner_join(
+    cur_network,
+    modules %>%
+        dplyr::select(c(gene_name, module, color)) %>%
+        dplyr::rename(gene1 = gene_name, module1 = module, color1 = color),
+    by = "gene1"
+) %>% dplyr::select(c(module1, color1))
+
+# get the module & color info for gene2
+temp2 <- dplyr::inner_join(
+    cur_network,
+    modules %>%
+        dplyr::select(c(gene_name, module, color)) %>%
+        dplyr::rename(gene2 = gene_name, module2 = module, color2 = color),
+    by = "gene2"
+) %>% dplyr::select(c(module2, color2))
+
+# add the module & color info
+cur_network <- cbind(cur_network, temp1, temp2)
+
+# set the edge color to the module's color if they are the two genes are in the same module
+cur_network$edge_color <- ifelse(
+    cur_network$module1 == cur_network$module2,
+    as.character(cur_network$module1),
+    "grey"
+)
+
+# keep this network before subsetting
+cur_network_full <- cur_network
+
+# keep the top 10% of edges
+edge_percent <- 0.1
+cur_network <- cur_network_full %>%
+    dplyr::slice_max(
+        order_by = weight,
+        n = round(nrow(cur_network) * edge_percent)
+    )
+
+# make the graph object with tidygraph
+graph <- cur_network %>%
+    igraph::graph_from_data_frame() %>%
+    tidygraph::as_tbl_graph(directed = FALSE) %>%
+    tidygraph::activate(nodes)
+
+# add the module name to the graph:
+V(graph)$module <- modules[V(graph)$name, "module"]
+
+# get the top 25 hub genes for each module
+hub_genes <- GetHubGenes(seurat_obj, n_hubs = 25) %>% .$gene_name
+V(graph)$hub <- ifelse(V(graph)$name %in% hub_genes, V(graph)$name, "")
+
+# make the plot with gggraph
+p <- ggraph(graph) +
+    geom_edge_link(aes(alpha = weight, color = edge_color)) +
+    geom_node_point(aes(color = module)) +
+    geom_node_label(aes(label = hub), repel = TRUE, max.overlaps = Inf, fontface = "italic") +
+    scale_colour_manual(values = mod_cp) +
+    scale_edge_colour_manual(values = mod_cp)
+
+p
+```
+
+
+```{R}
+seurat_obj 
+mods="all"
+n_hubs=10
+ n_other=20
+sample_edges = TRUE
+edge_prop = 0.75
+return_graph=FALSE
+edge.alpha=0.25
+vertex.label.cex=0.5
+hub.vertex.size=4
+other.vertex.size=1
+wgcna_name=NULL
+
+
+  # get data from active assay if wgcna_name is not given
+  if(is.null(wgcna_name)){wgcna_name <- seurat_obj@misc$active_wgcna}
+
+  # get modules, MEs:
+  MEs <- GetMEs(seurat_obj, wgcna_name)
+  modules <- GetModules(seurat_obj, wgcna_name)
+  
+  # using all modules?
+  if(all('all' %in% mods)){
+    mods <- levels(modules$module)
+    mods <- mods[mods != 'grey']
+  } else{
+
+    # check that the modules are present 
+    if(!all(mods %in% unique(as.character(modules$module)))){
+      stop(paste0("Some selected modules are not found in wgcna_name: ", wgcna_name))
+    }
+    modules <- modules %>% subset(module %in% mods)
+  }
+
+  # get TOM
+  TOM <- GetTOM(seurat_obj, wgcna_name)
+
+  # get hub genes:
+  hub_list <- lapply(mods, function(cur_mod){
+    cur <- subset(modules, module == cur_mod)
+    cur[,c('gene_name', paste0('kME_', cur_mod))] %>%
+      top_n(n_hubs) %>% .$gene_name
+  })
+  names(hub_list) <- mods
+
+  # sample the same number of genes in each module
+  other_genes <- modules %>%
+    subset(!(gene_name %in% unlist(hub_list))) %>%
+    group_by(module) %>%
+    sample_n(n_other, replace=TRUE) %>%
+    .$gene_name %>% unique
+
+  # subset TOM by the selected genes:
+  selected_genes <- c(unlist(hub_list), other_genes)
+  selected_modules <- modules %>% subset(gene_name %in% selected_genes)
+  subset_TOM <- TOM[selected_genes, selected_genes]
+
+  # setup for network plot
+  selected_modules$geneset <- ifelse(
+    selected_modules$gene_name %in% other_genes, 'other', 'hub'
+  )
+  selected_modules$size <- ifelse(selected_modules$geneset == 'hub', hub.vertex.size, other.vertex.size)
+  selected_modules$label <- ifelse(selected_modules$geneset == 'hub', as.character(selected_modules$gene_name), '')
+  selected_modules$fontcolor <- ifelse(selected_modules$color == 'black', 'gray50', 'black')
+
+  # make sure all nodes have at least one edge!!
+  edge_cutoff <- min(sapply(1:nrow(subset_TOM), function(i){max(subset_TOM[i,])}))
+  edge_df <- reshape2::melt(subset_TOM) %>% subset(value >= edge_cutoff)
+
+  edge_df$color <- future.apply::future_sapply(1:nrow(edge_df), function(i){
+    gene1 = as.character(edge_df[i,'Var1'])
+    gene2 = as.character(edge_df[i,'Var2'])
+
+    col1 <- modules %>% subset(gene_name == gene1) %>% .$color
+    col2 <- modules %>% subset(gene_name == gene2) %>% .$color
+
+    if(col1 == col2){
+      col = col1
+    } else{
+      col = 'grey90'
+    }
+    col
+  })
+
+  # subset edges:
+  groups <- unique(edge_df$color)
+  print(groups)
+  if(sample_edges){
+
+    # randomly sample
+    temp <- do.call(rbind, lapply(groups, function(cur_group){
+      cur_df <- edge_df %>% subset(color == cur_group)
+      n_edges <- nrow(cur_df)
+      cur_sample <- sample(1:n_edges, round(n_edges * edge_prop))
+      cur_df[cur_sample,]
+    }))
+  } else{
+
+    # get top strongest edges
+    temp <- do.call(rbind, lapply(groups, function(cur_group){
+      cur_df <- edge_df %>% subset(color == cur_group)
+      n_edges <- nrow(cur_df)
+      cur_df %>% dplyr::top_n(round(n_edges * edge_prop), wt=value)
+    }))
+  }
+
+  edge_df <- temp
+
+  # scale edge values between 0 and 1 for each module
+  edge_df <- edge_df %>% group_by(color) %>% mutate(value=scale01(value))
+
+  edge_df$color <- sapply(1:nrow(edge_df), function(i){
+    a = edge_df$value[i]
+    #if(edge_df$value[i] < 0.05){a=0.05}
+    alpha(edge_df$color[i], alpha=a)
+  })
+
+
+
+  g <- igraph::graph_from_data_frame(
+    edge_df,
+    directed=FALSE,
+    vertices=selected_modules
+  )
+
+  l <- igraph::layout_with_fr(g)
+
+  if(return_graph){return(g)}
+edge.alpha = 0.5
+  plot(
+    g, layout=l,
+    edge.color=adjustcolor(igraph::E(g)$color, alpha.f=edge.alpha),
+    vertex.size=igraph::V(g)$size,
+    edge.curved=0,
+    edge.width=0.5,
+    vertex.color=igraph::V(g)$color,
+    vertex.frame.color=igraph::V(g)$color,
+    vertex.label=igraph::V(g)$label,
+    vertex.label.family='Helvetica', #vertex.label.font=vertex_df$font,
+    vertex.label.font = 3,
+    vertex.label.color = igraph::V(g)$fontcolor,
+    vertex.label.cex=vertex.label.cex,
+  )
+
+
+
+
+```

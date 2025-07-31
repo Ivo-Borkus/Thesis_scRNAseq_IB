@@ -1,0 +1,158 @@
+---
+title: "Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+params:
+    dataset_name: "Lee"
+    cell_type: "T_cells"
+
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, fig.width = 20, fig.height = 20)
+```
+
+
+# Loading libraries and setting directories
+```{R loading libraries, include = F, echo = T}
+library(Seurat)
+library(knitr)
+
+
+# plotting and data science packages
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+library(here)
+library(ggrepel)
+```
+
+
+```{R settings}
+figure_output <- "02_scripts/overview_analysis/01_Figure/figs/"
+```
+
+```{R loading seurat}
+input_data <- "02_scripts/overview_analysis/01_Figure/data/"
+seurat_obj <- readRDS(file = paste0(input_data, "seurat_annotated_correctly.rds"))
+seurat_obj_subset_immune <- subset(seurat_obj, subset = ann_general_immune %in% c("Not-annotated"), invert = TRUE)
+```
+
+```{R loading meta-data}
+simple_meta <- read.csv("03_processing/09_subset_annotation/figs/composition_graphs/simple_meta.csv", header = TRUE)
+colnames(simple_meta) <- c("sample", "Necrosis_lab", "Hemorrhage_lab", "vital_tumour_lab", "CD3_lab", "CD8_lab", "CD68_lab")
+```
+
+```{R metadata}
+seurat_obj_subset_immune@meta.data %>%
+    group_by(ann_general_immune, primary_sample) %>%
+    summarise(n = n()) %>%
+    pivot_wider(names_from = ann_general_immune, values_from = n) %>%
+    as.data.frame() -> composition
+
+
+table(seurat_obj$primary_sample) %>% as.data.frame() -> size_sample
+colnames(size_sample) <- c("primary_sample", "Cell_count")
+table(seurat_obj_subset_immune$primary_sample) %>% as.data.frame() -> temp
+colnames(temp) <- c("primary_sample", "Cell_count_immune")
+size_sample <- left_join(temp, size_sample, by = "primary_sample")
+
+composition <- left_join(size_sample, composition, by = "primary_sample")
+
+simple_meta$primary_sample <- composition$primary_sample
+meta_data <- left_join(composition, simple_meta, by = "primary_sample")
+```
+
+
+
+```{R plotting all columns}
+plot_list <- list()
+columns_of_interest <- c("Naive_Tcells", "Cycling Tcells")
+all_columns <- unique(seurat_obj_subset_immune$ann_general_immune)
+
+results_list <- list(
+    P_Value = numeric(),
+    Adj_R_Squared = numeric(),
+    Correlation = numeric()
+)
+for (column in all_columns) {
+    plot_data <- meta_data
+    relative_immune <- paste0(column, "_relative_immune")
+    relative_total <- paste0(column, "_relative_total")
+    plot_data[[relative_immune]] <- (plot_data[[column]] / plot_data$Cell_count_immune) * 100
+    plot_data[[relative_total]] <- (plot_data[[column]] / plot_data$Cell_count) * 100
+    x_par <- relative_immune
+    y_par <- "vital_tumour_lab"
+    label_par <- "primary_sample"
+
+    summary_stats <- summary(lm(plot_data[[x_par]] ~ plot_data[[y_par]], data = plot_data))
+    p_val <- as.numeric(summary_stats$coefficients[, 4][2])
+    adj_r2 <- summary_stats$adj.r.squared
+    round(cor(plot_data[[x_par]], plot_data[[y_par]], method = c("pearson")), 3) -> corr
+    # Store results
+    results_list$P_Value <- c(results_list$P_Value, p_val)
+    results_list$Adj_R_Squared <- c(results_list$Adj_R_Squared, adj_r2)
+    results_list$Correlation <- c(results_list$Correlation, corr)
+
+    if (column %in% c("CD4-Tcells", "B-cells")) {
+        corr_place_x <- (max(plot_data[[x_par]]) / 2)
+    } else {
+        corr_place_x <- max(plot_data[[x_par]])
+    }
+
+
+    plot_data %>% ggplot(aes(x = !!sym(x_par), y = !!sym(y_par), colour = !!sym(label_par), label = !!sym(label_par))) +
+        geom_point() +
+        geom_text_repel(, size = 4, color = "black", max.overlaps = Inf) +
+        labs(title = paste0(column)) +
+        geom_smooth(method = lm, color = "red", se = FALSE) +
+        annotate("text",
+            x = corr_place_x, y = max(plot_data[[y_par]]),
+            label = paste("r = ", corr), hjust = 1, size = 5
+        ) -> plot
+    plot <- plot + theme_bw() + theme(
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")
+    )
+    plot_list[[column]] <- plot
+}
+```
+
+```{R plotting, eval = F}
+pdf(paste0(figure_output, "correlation_plots_immune_Specific_subtypes.pdf"), width = 5, height = 7)
+wrap_plots(plot_list, ncol = 1) + plot_layout(guides = "collect")
+dev.off()
+```
+
+
+```{R plot_list 2}
+pdf(paste0(figure_output, "Suppl_G_correlation_plots_all.pdf"), width = 13, height = 13)
+wrap_plots(plot_list, ncol = 3) + plot_layout(guides = "collect")
+dev.off()
+wrap_plots(plot_list, ncol = 3) + plot_layout(guides = "collect")
+```
+
+
+```{R table of statistics}
+results_list %>% as.data.frame() -> results_df
+row.names(results_df) <- all_columns
+knitr::kable(results_df, format = "markdown")
+```
+
+```{R sessionInfo}
+sessionInfo()
+```
+
+```{R rmd, eval = F}
+rmarkdown::render(
+    input = paste0("02_scripts/overview_analysis/01_Figure/suppl/suppl_G.rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits",
+    output_file = paste0("suppl_G_1.html")
+)
+```

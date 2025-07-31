@@ -1,0 +1,237 @@
+
+---
+title: "Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, fig.width = 15, fig.height = 15)
+```
+
+# Loading packages
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+# devtools::install_github("immunogenomics/lisi")
+library(lisi)
+library(dplyr)
+library(ggplot2)
+library(purrr)
+library(here)
+library(tidyr)
+library(ggrepel)
+library(gridExtra)
+library(patchwork)
+library(dittoSeq)
+
+
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+```
+
+# Loading seurat object
+```{R loading seurat}
+seurat_obj <- readRDS(file = "02_scripts/overview_analysis/composition/data/seurat_obj_main_processed_batchnf.rds")
+```
+
+```{R harmonising_annotations for the figure}
+seurat_obj$sample %>% unique() -> unique_samples
+primary_tumours <- c("CUP1", "Col1", "Col2", "Lung1", "Mel1", "Mel2a", "Mel2b", "Mel3")
+
+tumour_map <- setNames(primary_tumours, unique_samples)
+seurat_obj$primary_sample <- unname(tumour_map[seurat_obj$sample])
+seurat_obj$primary_sample <- factor(seurat_obj$primary_sample, levels = unique(seurat_obj$primary_sample))
+
+output_figs <- "02_scripts/overview_analysis/01_Figure/figs/"
+
+seurat_obj@meta.data %>% colnames()
+```
+
+```{R annotation vector level 7, include = T}
+# The final annotation of the dataset where all of the previous levels are derived from
+levels_ann_7 <- c(
+    "Bad-Quality", "Doublets",
+    "Tnaive_b1", "Tnaive_b2", "Teff_CD8_b", "Texh_CD8_b", "Tregs_b", "Proliferating_CD8_1b", "Proliferating_CD8_2b",
+    "Tnaive", "Tem_CD8", "Teff_CD8", "Teff_exh_CD8", "Texterm_CD8", "Tregs_memory", "Tregs_CCR8", "Th_cells", "Tactive", "IFN_response", "Proliferating_CD4", "Proliferating_CD8_gd", "Proliferating_CD8_1a", "Proliferating_CD8_2a", "NK", "GD_NKT_CD8",
+    "Monocytes", "Macrophages", "Neutrophils", "Macrophage_OTOA", "CD1CA+_A", "Monocytic_MDSCs", "Microglia", "pDCs", "Macrophage_SPP1", "cDC1", "mregDCs",
+    "PlasmaCells", "Bcells"
+)
+```
+```{R fig 1 A prep for annotation}
+# Making sure there are no NAs in the ann_lvl_1 for the bad-quality cells
+####
+seurat_obj$ann_lvl_1 <- factor(seurat_obj$ann_lvl_1)
+col <- seurat_obj$ann_lvl_1
+levels(col) <- c(levels(col), "Not-annotated")
+col[is.na(col)] <- "Not-annotated"
+seurat_obj@meta.data[["ann_lvl_1"]] <- col # Re-assign the modified factor
+seurat_obj$ann_lvl_1 %>% table()
+
+
+# Adjusting the ann_lvl_7 to fit ann_lvl_1 (where the tumour ann is located)
+####
+adjusted_ann <- c(
+    "Bad-Quality", "Bad-Quality",
+    "T-cells", "T-cells", "T-cells", "T-cells", "T-cells", "T-cells", "T-cells",
+    "T-cells", "T-cells", "T-cells", "T-cells", "T-cells", "T-cells", "T-cells", "T-cells", "T-cells", "T-cells", "T-cells", "T-cells", "T-cells", "T-cells", "T-cells", "T-cells",
+    "Myeloid", "Myeloid", "Myeloid", "Myeloid", "Myeloid", "Myeloid", "Myeloid", "Myeloid", "Myeloid", "Myeloid", "Myeloid",
+    "B-cells", "B-cells"
+)
+
+
+# Inserting all of these new labels as a new column
+####
+seurat_obj$ann_lvl_7 <- factor(seurat_obj$ann_lvl_7, levels <- levels_ann_7)
+Idents(seurat_obj) <- "ann_lvl_7"
+names(adjusted_ann) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, adjusted_ann)
+seurat_obj[["ann_lvl_1_immune"]] <- Idents(seurat_obj)
+
+# Making sure there are no NAs in the ann_lvl_1_immune for the tumour/brain cells
+####
+col <- seurat_obj$ann_lvl_1_immune
+levels(col) <- c(levels(col), "Not-annotated")
+col[is.na(col)] <- "Not-annotated"
+seurat_obj@meta.data[["ann_lvl_1_immune"]] <- col # Re-assign the modified factor
+
+# Prepping the data so that we can combine ann_lvl_1_immune with the tumour and brain info
+####
+seurat_obj@meta.data <- seurat_obj@meta.data %>%
+    mutate(
+        ann_lvl_1_immune = as.character(ann_lvl_1_immune),
+        ann_lvl_1 = as.character(ann_lvl_1)
+    )
+
+seurat_obj@meta.data <- seurat_obj@meta.data %>%
+    mutate(
+        ann_lvl_1_total = ifelse(ann_lvl_1_immune == "Not-annotated" & ann_lvl_1 %in% c("Tumour", "Brain"), ann_lvl_1, ann_lvl_1_immune)
+    )
+
+# seurat_obj$ann_lvl_1_total %>% table()
+seurat_no_bad_quality <- subset(seurat_obj, subset = ann_lvl_1_total %in% c("Not-annotated", "Bad-Quality"), invert = TRUE)
+# seurat_no_bad_quality$ann_lvl_1_total %>% table()
+
+# seurat_no_bad_quality@meta.data$ann_lvl_7 %>% table()
+```
+
+
+```{R adding other annotations}
+adjusted_ann <- c(
+    "Naive_Tcells", "Naive_Tcells", "CD8-Tcells", "CD8-Tcells", "CD4-Tcells", "Cycling Tcells", "Cycling Tcells",
+    "Naive_Tcells", "CD8-Tcells", "CD8-Tcells", "CD8-Tcells", "CD8-Tcells", "CD4-Tcells", "CD4-Tcells", "CD4-Tcells", "CD4-Tcells", "CD4-Tcells", "Cycling Tcells", "Cycling Tcells", "Cycling Tcells", "Cycling Tcells", "NK", "CD8-Tcells",
+    "Mono/Macro", "Mono/Macro", "Neutrophils", "Mono/Macro", "Dendritic cells", "Mono/Macro", "Mono/Macro", "Dendritic cells", "Mono/Macro", "Dendritic cells", "Dendritic cells",
+    "B-cells", "B-cells"
+)
+
+seurat_obj <- seurat_no_bad_quality
+Idents(seurat_obj) <- "ann_lvl_7"
+names(adjusted_ann) <- levels(seurat_obj)
+
+seurat_obj <- RenameIdents(seurat_obj, adjusted_ann)
+seurat_obj[["ann_general_immune"]] <- Idents(seurat_obj)
+
+
+col <- seurat_obj$ann_general_immune
+levels(col) <- c(levels(col), "Not-annotated")
+col[is.na(col)] <- "Not-annotated"
+seurat_obj@meta.data[["ann_general_immune"]] <- col # Re-assign the modified factor
+```
+
+```{R t 1 and t 2}
+adjusted_ann_T <- c(
+    "Naive_Tcells", "Naive_Tcells", "Effector_CD8_Tcells", "Exhausted_CD8_Tcells", "Regulatory_Tcells", "Proliferating_CD8_Tcells", "Proliferating_CD8_Tcells",
+    "Naive_Tcells", "Effector_memory_CD8_Tcells", "Effector_CD8_Tcells", "Exhausted_CD8_Tcells", "Texterm_CD8", "Regulatory_Tcells", "Regulatory_Tcells", "Helper_Tcells", "Active_Tcells", "IFN_response_Tcells", "Proliferating_CD4_Tcells", "Proliferating_CD8_Tcells", "Proliferating_CD8_Tcells", "Proliferating_CD8_Tcells", "NK", "GD_NKT_CD8_Tcells",
+    "Monocytes", "Macrophages", "Neutrophils", "Macrophage_OTOA", "CD1CA+_A", "Monocytic_MDSCs", "Microglia", "pDCs", "Macrophage_SPP1", "cDC1", "mregDCs",
+    "PlasmaCells", "Bcells"
+)
+
+Idents(seurat_obj) <- "ann_lvl_7"
+names(adjusted_ann_T) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, adjusted_ann_T)
+
+seurat_obj[["ann_T_1"]] <- Idents(seurat_obj)
+
+table(seurat_obj$ann_T_1)
+col <- seurat_obj$ann_T_1
+levels(col) <- c(levels(col), "Not-annotated")
+col[is.na(col)] <- "Not-annotated"
+seurat_obj@meta.data[["ann_T_1"]] <- col # Re-assign the modified factor
+table(col)
+
+
+adjusted_ann_more_specific <- c(
+    "Tnaive", "Tnaive", "Teff_CD8", "Texh_CD8", "Tregs", "Proliferating_CD8", "Proliferating_CD8",
+    "Tnaive", "Tem_CD8", "Teff_CD8", "Texh_CD8", "Texterm_CD8", "Tregs_memory", "Tregs_CCR8", "Th_cells", "Tactive", "IFN_response", "Proliferating_CD4", "Proliferating_CD8", "Proliferating_CD8", "Proliferating_CD8", "NK", "GD_NKT_CD8",
+    "Monocytes", "Macrophages", "Neutrophils", "Macrophage_OTOA", "CD1CA+_A", "Monocytic_MDSCs", "Microglia", "pDCs", "Macrophage_SPP1", "cDC1", "mregDCs",
+    "PlasmaCells", "Bcells"
+)
+
+Idents(seurat_obj) <- "ann_lvl_7"
+names(adjusted_ann_more_specific) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, adjusted_ann_more_specific)
+seurat_obj[["ann_T_2"]] <- Idents(seurat_obj)
+```
+
+
+```{R checking ann_T_1, eval = T}
+seurat_obj$ann_lvl_1_total %>% table()
+seurat_obj_Tcells <- subset(seurat_obj, subset = ann_lvl_1_total == "T-cells")
+
+order <- c("Proliferating_CD4_Tcells", "Proliferating_CD8_Tcells", "Naive_Tcells", "Effector_memory_CD8_Tcells", "Effector_CD8_Tcells", "Exhausted_CD8_Tcells", "Texterm_CD8", "Regulatory_Tcells", "Helper_Tcells", "Active_Tcells", "IFN_response_Tcells", "NK", "GD_NKT_CD8_Tcells")
+seurat_obj_Tcells$ann_T_1 <- factor(seurat_obj_Tcells$ann_T_1, levels = order)
+cluster_order <- match(levels(seurat_obj_Tcells@meta.data[["ann_T_1"]]), metaLevels("ann_T_1", seurat_obj_Tcells))
+x_order <- match(levels(seurat_obj_Tcells@meta.data[["primary_sample"]]), metaLevels("primary_sample", seurat_obj_Tcells))
+
+
+dittoBarPlot(seurat_obj_Tcells, var = "ann_T_1", group.by = "primary_sample", var.labels.reorder = cluster_order, x.reorder = x_order)
+output_figs <- "02_scripts/overview_analysis/02_Figure/figs/"
+
+# ggsave(file = paste0(output_figs, "A_specific_Tcells_2.png"), width = 12, height = 9)
+```
+
+```{R adding senescence}
+celltypes <- c("Tnaive_b1", "Texh_CD8_b", "Tnaive_b2", "Proliferating_CD8_1b", "Tregs_b", "Proliferating_CD8_2b", "Teff_CD8_b")
+celltypes_2 <- c("Proliferating_CD8_1a", "Tnaive", "Texterm_CD8", "Th_cells", "Teff_exh_CD8", "Teff_CD8", "Proliferating_CD4", "Tem_CD8", "Tregs_memory", "Proliferating_CD8_2a", "Tregs_CCR8", "GD_NKT_CD8", "Proliferating_CD8_gd", "NK", "IFN_response", "Tactive")
+
+seurat_obj@meta.data <- seurat_obj@meta.data %>%
+    mutate(cells_of_interest = case_when(
+        ann_lvl_7 %in% celltypes ~ "Senescent T cells",
+        ann_lvl_7 %in% celltypes_2 ~ "Non-senescent T cells",
+        TRUE ~ "Other"
+    ))
+
+seurat_obj$cells_of_interest %>% table()
+```
+
+```{R saving seurat}
+output_data <- "02_scripts/overview_analysis/01_Figure/data/"
+
+saveRDS(seurat_obj, paste0(output_data, "seurat_annotated_correctly.rds"))
+```
+
+
+
+# Adding annotations to the WGCNA object
+
+```{R }
+seurat_obj_wgcna <- readRDS(file = paste0("03_processing/101_processing_exernal/data/optimising_hdWGCNA/Inhous_hvf_5000_nnp_25_max_shared_10_seurat_processed_final.rds"))
+```
+
+```{R adding the metadata}
+cells_meta_data <- subset(seurat_obj_Tcells@meta.data, select = c("ann_T_1", "ann_T_2", "ann_general_immune", "ann_lvl_7", "ann_lvl_1_total"))
+seurat_obj_wgcna <- AddMetaData(seurat_obj_wgcna, cells_meta_data)
+```
+
+
+```{R saving wgcna}
+saveRDS(seurat_obj_wgcna, paste0(output_data, "seurat_wgcna_annotated.rds"))
+```
+
+```{R sessioninfo}
+sessionInfo()
+```

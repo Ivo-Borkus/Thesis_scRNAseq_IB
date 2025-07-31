@@ -1,0 +1,360 @@
+
+---
+title: "2-B"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, fig.width = 15, fig.height = 15)
+```
+
+# Loading packages
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+# devtools::install_github("immunogenomics/lisi")
+# library(lisi)
+library(dplyr)
+library(ggplot2)
+# library(purrr)
+# library(here)
+# library(tidyr)
+library(ggrepel)
+library(gridExtra)
+# library(patchwork)
+# library(dittoSeq)
+library(UCell)
+library(reticulate)
+
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+input_data <- "02_scripts/overview_analysis/01_Figure/data/"
+output_figs <- "02_scripts/overview_analysis/02_Figure/figs/"
+```
+
+# Loading seurat object
+```{R loading seurat}
+seurat_obj_Tcells <- readRDS(file = paste0(input_data, "processed_Tcells_annotated_Fig_2B.rds"))
+reduction_name <- "Tcells"
+```
+
+
+```{R random things, eval = F}
+Idents(seurat_obj_Tcells) <- "cells_of_interest"
+VlnPlot(seurat_obj_Tcells, features = c("CCNB1", "CCNB2", "CDK2", "CDK4", "CHECK1", "E2F1", "FANCD2", "PRKDC"))
+```
+
+
+```{R vulcano_plot }
+volcano_plotting <- function(marker_list, ident.1 = "", ident.2 = "") {
+    marker_list$genes <- row.names(marker_list)
+    marker_list$diffexpressed <- "NO"
+    marker_list$diffexpressed[marker_list$avg_log2FC > 1.5 & marker_list$p_val < 0.05] <- "UP"
+    marker_list$diffexpressed[marker_list$avg_log2FC < -1.5 & marker_list$p_val < 0.05] <- "DOWN"
+    marker_list$diffexpressed[marker_list$avg_log2FC > 1.5 & marker_list$p_val < 0.05] <- "UP"
+    marker_list$diffexpressed[marker_list$avg_log2FC < -1.5 & marker_list$p_val < 0.05] <- "DOWN"
+    # marker_list$delabel <- NA
+    # marker_list$delabel[marker_list$diffexpressed != "NO"] <- row.names(marker_list)[marker_list$diffexpressed != "NO"]
+
+    marker_list$delabel <- NA
+    marker_list$delabel[marker_list$diffexpressed != "NO"] <- row.names(marker_list)[marker_list$diffexpressed != "NO"]
+    marker_list %>%
+        arrange(desc(avg_log2FC)) %>%
+        dplyr::select(avg_log2FC) %>%
+        head(, n = 10) %>%
+        row.names() -> labels_1
+    marker_list %>%
+        arrange(avg_log2FC) %>%
+        dplyr::select(avg_log2FC) %>%
+        head(, n = 10) %>%
+        row.names() -> labels_2
+    labels <- c(labels_1, labels_2)
+    marker_list$delabel <- NA
+    marker_list$delabel[marker_list$genes %in% labels] <- marker_list$genes[marker_list$genes %in% labels]
+    min_above <- min(marker_list$p_val[marker_list$p_val > 0])
+    marker_list$p_val <- ifelse(marker_list$p_val == 0, min_above, marker_list$p_val)
+    volcano_plot <- ggplot(data = marker_list, aes(x = avg_log2FC, y = -log10(p_val), col = diffexpressed, label = delabel)) +
+        geom_point() +
+        geom_text_repel(max.overlaps = Inf) +
+        scale_color_manual(values = c("blue", "black", "red")) +
+        geom_vline(xintercept = c(-1.5, 1.5), col = "red") +
+        geom_hline(yintercept = -log10(0.05), col = "red") & labs(title = paste0("Comparing: ", ident.1, " versus the ", ident.2))
+    return(volcano_plot)
+}
+```
+
+# Single cell
+```{R Single_cell, eval = F}
+# install.packages("BiocManager") # Needed to install all Bioconductor packages
+# BiocManager::install("MAST")
+library(MAST)
+
+Idents(seurat_obj_Tcells) <- "cells_of_interest"
+marker_list_3 <- FindMarkers(seurat_obj_Tcells, ident.1 = "Senescent T cells", ident.2 = "Non-senescent T cells", test.use = "MAST")
+saveRDS(marker_list_3, file = "02_scripts/overview_analysis/02_Figure/marker_list_3.rds")
+volcano_plotting(marker_list_3, ident.1 = "Senescent T cells", ident.2 = "Non-senescent T cells")
+# ggsave(paste0(output_figs, "volcano_plot_all_senes_v_non-senes.png"))
+```
+
+```{R single cell load}
+library(MAST)
+Idents(seurat_obj_Tcells) <- "cells_of_interest"
+marker_list_3 <- readRDS(file = "02_scripts/overview_analysis/02_Figure/marker_list_3.rds")
+volcano_plotting(marker_list_3, ident.1 = "Senescent T cells", ident.2 = "Non-senescent T cells")
+```
+
+```{R wilcox}
+Idents(seurat_obj_Tcells) <- "cells_of_interest"
+marker_list_4 <- FindMarkers(seurat_obj_Tcells, ident.1 = "Senescent T cells", ident.2 = "Non-senescent T cells", test.use = "wilcox")
+volcano_plotting(marker_list_4, ident.1 = "Senescent T cells", ident.2 = "Non-senescent T cells")
+ggsave(paste0(output_figs, "volcano_plot_all_senes_v_non-senes.png"))
+```
+
+# Sample pseudobulk
+```{R Pseudobulk sample }
+# pseudobulk the counts based on -donor-
+pseudo_seurat <- AggregateExpression(seurat_obj_Tcells, assays = "RNA", return.seurat = T, group.by = c("primary_sample", "cells_of_interest"))
+Idents(pseudo_seurat) <- "cells_of_interest"
+marker_list <- FindMarkers(pseudo_seurat, ident.1 = "Senescent T cells", ident.2 = "Non-senescent T cells", test.use = "MAST")
+volcano_plotting(marker_list, ident.1 = "Senescent T cells", ident.2 = "Non-senescent T cells")
+ggsave(paste0(output_figs, "volcano_plot_sample_senes_v_non-senes.png"))
+```
+
+# Primary pseudobulk
+```{R creating primary column, echo = F}
+seurat_obj_Tcells@meta.data <- seurat_obj_Tcells@meta.data %>%
+    mutate(primary = case_when(
+        primary_sample %in% c("CUP1") ~ "CUP",
+        primary_sample %in% c("Col1", "Col2") ~ "Col",
+        primary_sample %in% c("Lung1") ~ "Lung",
+        primary_sample %in% c("Mel1", "Mel2a", "Mel2b", "Mel3") ~ "Mel",
+        TRUE ~ "Other"
+    ))
+```
+
+
+```{R pseudobulking}
+# pseudobulk the counts based on -condition-
+pseudo_seurat_2 <- AggregateExpression(seurat_obj_Tcells, assays = "RNA", return.seurat = T, group.by = c("primary", "cells_of_interest"))
+Idents(pseudo_seurat_2) <- "cells_of_interest"
+
+marker_list_2 <- FindMarkers(pseudo_seurat_2, ident.1 = "Senescent T cells", ident.2 = "Non-senescent T cells", test.use = "MAST")
+volcano_plotting(marker_list_2, ident.1 = "Senescent T cells", ident.2 = "Non-senescent T cells")
+ggsave(paste0(output_figs, "volcano_plot_primary_senes_v_non-senes.png"))
+
+# marker_list <- FindMarkers(seurat_obj_Tcells, ident.1 = "Senescent T cells", ident.2 = "Non-senescent T cells", test.use = "wilcox")
+```
+
+```{R excel}
+excel_sheet_DE <- function(markers, output_dir, name) {
+    library(writexl)
+    print(paste0("Output will be put in: ", output_dir, name, ".xlsx"))
+    if (file.exists(output_dir)) {
+        markers$gene <- row.names(markers)
+        markers$positive <- ifelse(markers$avg_log2FC >= 0, "Yes", "No")
+        markers %>%
+            arrange(positive, desc(avg_log2FC)) %>% # Arrange within each cluster
+            group_by(positive) %>%
+            select(positive, pct.1, pct.2, p_val, p_val_adj, avg_log2FC, gene) %>%
+            group_split() %>% # Split into list by 'cluster'
+            setNames(unique(markers$positive)) %>% # Name list elements
+            writexl::write_xlsx(paste0(output_dir, name, ".xlsx"))
+    } else {
+        stop("Directory does not exist")
+    }
+}
+
+output_excel <- "02_scripts/overview_analysis/02_Figure/"
+```
+
+```{R printing marker_lists to a sheet, eval = F}
+marker_list$p_val <- ifelse(marker_list$p_val == 0, min_above, marker_list$p_val)
+
+
+
+marker_list <- marker_list_4
+marker_list$genes <- row.names(marker_list)
+marker_list$positive <- ifelse(marker_list$avg_log2FC >= 0, "Yes", "No")
+marker_list_positive <- marker_list[marker_list$positive == "Yes", ]
+gene_list %>% length()
+```
+
+```{R gsea function, include = F}
+library(fgsea)
+# load the GO Biological Pathways file (downloaded from EnrichR website)
+pathway_link <- "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/overview_analysis/hdWGCNA/paper_figures/excel_signatures/geneSetLibrary"
+pathways_gsea <- fgsea::gmtPathways(pathway_link)
+names(pathways_gsea) <- stringr::str_replace(names(pathways_gsea), " \\s*\\([^\\)]+\\)", "")
+
+
+
+pos_neg <- function(marker_list, max_genes = NULL) {
+    print("This functions returns two gene lists, one for the positive fold change and the other for the negative ones")
+    # print(class(marker_list))
+    marker_list$positive <- ifelse(marker_list$avg_log2FC >= 0, "Yes", "No")
+
+    ## For negative genes
+    marker_list_negative <- marker_list[marker_list$positive == "No", ]
+    marker_list_negative %>%
+        arrange((avg_log2FC)) %>%
+        dplyr::select(avg_log2FC) -> fold_change_negative
+    gene_list_negative <- fold_change_negative$avg_log2FC
+    names(gene_list_negative) <- row.names(fold_change_negative)
+    gene_list_negative <- (gene_list_negative * -1)
+
+
+    ## For the positive genes
+    marker_list_positive <- marker_list[marker_list$positive == "Yes", ]
+    marker_list_positive %>%
+        arrange(desc(avg_log2FC)) %>%
+        dplyr::select(avg_log2FC) -> fold_change_positive
+    gene_list_positive <- fold_change_positive$avg_log2FC
+    names(gene_list_positive) <- row.names(fold_change_positive)
+    if (is.null(max_genes)) {
+        print("Using all of the genes present in the marker_list")
+        max_genes_negative <- length(gene_list_negative)
+        max_genes_positive <- length(gene_list_positive)
+    } else {
+        max_genes_negative <- max_genes
+        max_genes_positive <- max_genes
+    }
+    gene_list_negative <- gene_list_negative[1:max_genes_negative]
+    gene_list_positive <- gene_list_positive[1:max_genes_positive]
+
+
+    return(list(gene_list_negative, gene_list_positive))
+}
+
+gsea_table_2_groups <- function(marker_list, output_folder, name_list, pathways, max_genes_par = NULL) {
+    list_pos_neg <- pos_neg(marker_list, max_genes = max_genes_par)
+    # gene_list_negative <- list_pos_neg[[1]]
+    # gene_list_positive <- list_pos_neg[[2]]
+    # print(pathways[[1]] %>% head())
+    list_pathways <- lapply(c(1, 2), function(i) {
+        pathways <- pathways
+        # print(pathways[[i]] %>% head())
+        # print(i)
+        if (i == 1) {
+            print("Working on the negative gene list")
+            name <- "Negative"
+        } else {
+            print("Working on the positive gene list")
+            name <- "Positive"
+        }
+        gene_list <- list_pos_neg[[i]]
+        # print(gene_list %>% head())
+        # print(pathways)
+        gsea_df <- fgsea::fgsea(
+            pathways = pathways,
+            stats = gene_list,
+            minSize = 10,
+            maxSize = 500,
+            scoreType = "pos"
+        )
+        top_pathways <- gsea_df %>%
+            subset(pval < 0.05) %>%
+            slice_max(order_by = NES, n = 25) %>%
+            .$pathway
+        # print(top_pathways[1:5])
+        # print(head(gsea_df))
+        png(paste0(output_folder, name_list, "_", name, "_genes_used_", length(gene_list), ".png"), width = 1000, height = 1200)
+        print(plotGseaTable(
+            pathways[top_pathways],
+            gene_list,
+            gsea_df,
+            gseaParam = 0.5,
+            colwidths = c(10, 4, 1, 1, 1)
+        ))
+        dev.off()
+        print(plotGseaTable(
+            pathways[top_pathways],
+            gene_list,
+            gsea_df,
+            gseaParam = 0.5,
+            colwidths = c(10, 4, 1, 1, 1)
+        ))
+        selected_pathway <- "DNA Repair"
+
+        print(plotEnrichment(
+            pathways_gsea[[selected_pathway]],
+            gene_list
+        ) + labs(title = selected_pathway))
+        top_pathways
+    })
+    return(list_pathways)
+}
+```
+
+
+```{R running gsea for all of my lists}
+list_vec <- list(marker_list, marker_list_2, marker_list_3, marker_list_4)
+name_vec <- list("Pseudobulk_sample", "Pseudobulk_primary", "Single_mast", "Single_Wilcox")
+output_figures <- "02_scripts/overview_analysis/02_Figure/figs/DE_plots/"
+output_excel <- "02_scripts/overview_analysis/02_Figure/"
+
+
+# as.data.frame(list_vec[1]) %>% head()
+# excel_sheet_DE(list_vec[1], output_excel, name = name_vec[1])
+
+
+pathways <- lapply(c(1, 2, 3, 4), function(i) {
+    list_vec <- list(marker_list, marker_list_2, marker_list_3)
+    name_vec <- list("Pseudobulk_sample", "Pseudobulk_primary", "Single_mast")
+    # list_vec <- list(marker_list, marker_list_4)
+    # name_vec <- list("Pseudobulk_sample", "Single_Wilcox")
+    print(paste0("Working on sample: ", name_vec[i]))
+    excel_sheet_DE(as.data.frame(list_vec[i]), output_excel, name = name_vec[i])
+    pathway_list <- gsea_table_2_groups(marker_list = as.data.frame(list_vec[i]), output_folder = output_figures, name_list = name_vec[i], pathways = pathways_gsea, max_genes = 200)
+})
+```
+
+
+
+```{R garbage, eval = F}
+# list_pos_neg <- pos_neg(as.data.frame(list_vec[1]))
+# list_pos_neg
+# gene_list <- list_pos_neg[[1]]
+# gene_list %>% class()
+# as.data.frame(list_vec[1]) %>% head()
+
+
+# print(pathways[[i]] %>% head())
+# i <- 1
+# print(i)
+# if (i == 1) {
+#     print("Working on the negative gene list")
+#     name <- "Negative"
+# } else {
+#     print("Working on the positive gene list")
+#     name <- "Positive"
+# }
+# gene_list <- list_pos_neg[[1]]
+# print(gene_list %>% length())
+# # print(pathways)
+# gsea_df <- fgsea::fgsea(
+#     pathways = pathways_gsea,
+#     stats = gene_list,
+#     minSize = 10,
+#     maxSize = 500,
+#     scoreType = "pos"
+# )
+```
+
+
+```{R old code, eval = F}
+# name of the pathway to plot
+list_pos_neg <- pos_neg(marker_list)
+gene_list <- list_pos_neg[[2]]
+```
+
+
+```{R}
+sessionInfo()
+```
+

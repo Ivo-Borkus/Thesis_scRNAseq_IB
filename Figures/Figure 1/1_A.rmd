@@ -1,0 +1,104 @@
+
+---
+title: "1-C"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, fig.width = 15, fig.height = 15)
+```
+
+# Loading packages
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+# devtools::install_github("immunogenomics/lisi")
+library(lisi)
+library(dplyr)
+library(ggplot2)
+library(purrr)
+library(here)
+library(tidyr)
+library(ggrepel)
+library(gridExtra)
+library(patchwork)
+library(dittoSeq)
+library(RColorBrewer)
+
+
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+input_data <- "02_scripts/overview_analysis/01_Figure/data/"
+output_figs <- "02_scripts/presentation_figures/"
+```
+
+# Loading seurat object
+```{R loading seurat}
+seurat_obj <- readRDS(file = paste0(input_data, "seurat_annotated_correctly.rds"))
+```
+
+
+
+```{R fig c}
+sample_col <- "primary_sample"
+reduction_name <- "main"
+
+Idents(seurat_obj) <- "ann_lvl_1_total"
+features <- 2000
+
+seurat_obj[["RNA"]] <- split(seurat_obj[["RNA"]], f = seurat_obj@meta.data[[sample_col]])
+seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = "vst", nfeatures = features, verbose = TRUE)
+hvf_info <- HVFInfo(seurat_obj)
+top_variable_genes <- hvf_info[order(hvf_info$variance.standardized, decreasing = TRUE), ]
+top_x_genes <- rownames(top_variable_genes)[1:features]
+VariableFeatures(seurat_obj) <- top_x_genes
+seurat_obj <- ScaleData(object = seurat_obj, vars.to.regress = c("percent_mt"), features = top_x_genes, verbose = FALSE)
+seurat_obj <- RunPCA(
+  object = seurat_obj, nfeatures.print = 5, ndims.print = 1:2, reduction.name = paste0("pca_", reduction_name)
+)
+print(ElbowPlot(seurat_obj, reduction = paste0("pca_", reduction_name), ndims = 100))
+print(VizDimLoadings(seurat_obj, dims = 1:5, reduction = paste0("pca_", reduction_name), nfeatures = 15))
+seurat_obj <- FindNeighbors(seurat_obj, reduction = paste0("pca_", reduction_name), dims = 1:25)
+
+seurat_obj <- RunUMAP(seurat_obj, reduction = paste0("pca_", reduction_name), dims = 1:25, reduction.name = paste0("umap_", reduction_name))
+
+
+
+level_order <- c("Tumour", "Brain", "T-cells", "Myeloid", "B-cells")
+seurat_obj@meta.data[["ann_lvl_1_total"]] <- factor(seurat_obj@meta.data[["ann_lvl_1_total"]], levels = level_order)
+
+color_lvl_1 <- brewer.pal(n = 5, name = "Set1")
+
+plot_2 <- dittoDimPlot(seurat_obj, reduction.use = paste0("umap_", reduction_name), color.panel = color_lvl_1, var = "ann_lvl_1_total", do.label = F, order = "decreasing") & NoAxes()
+plot_2
+```
+
+```{R seurat}
+Idents(seurat_obj) <- "ann_lvl_1_total"
+seurat_obj_2 <- seurat_obj
+DimPlot(seurat_obj, reduction = "umap_main", cols = color_lvl_1) + theme(legend.text = element_text(size = 15)) & NoAxes()
+ggsave(file = paste0(output_figs, "C_umap_of_all_annotations.png"), width = 10, height = 10)
+
+features_all <- c("PTPRC", "CD3E", "CD8A", "MS4A1", "IGHG1", "CD68", "MLANA", "MYC", "MAG")
+
+FeaturePlot(seurat_obj_2, features = features_all, reduction = "umap_main") & NoAxes()
+ggsave(file = paste0(output_figs, "Suppl_umap_of_all_features.png"), width = 10, height = 10)
+```
+
+
+
+
+```{R saving plot, eval = F}
+ggsave(plot_2, file = paste0(output_figs, "C_umap_of_all_annotations.png"), width = 12, height = 9)
+```
+
+
+```{R sessioninfo}
+sessionInfo()
+```
+

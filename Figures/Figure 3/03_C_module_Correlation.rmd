@@ -1,0 +1,118 @@
+---
+title: "Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+params:
+    dataset_name: "Lee"
+    cell_type: "T_cells"
+
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, fig.width = 20, fig.height = 20)
+```
+
+
+# Loading libraries and setting directories
+```{R loading libraries, include = F, echo = T}
+library(Seurat)
+
+# plotting and data science packages
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+
+# co-expression network analysis packages:
+library(WGCNA)
+library(hdWGCNA)
+library(knitr)
+# using the cowplot theme for ggplot
+theme_set(theme_cowplot())
+
+# set random seed for reproducibility
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+source("02_scripts/101_processing_external_datasets/qc_functions.R")
+set.seed(1123)
+# optionally enable multithreading
+enableWGCNAThreads(nThreads = 8)
+figure_output <- "02_scripts/overview_analysis/03_Figure/final_figs/"
+```
+
+
+```{R loading in data}
+seurat_obj <- readRDS(file = paste0("03_processing/101_processing_exernal/data/optimising_hdWGCNA/Inhous_hvf_5000_nnp_25_max_shared_10_seurat_processed_final.rds"))
+```
+
+
+```{R signatures}
+library(fgsea)
+set.seed(42)
+dir_name <- "02_scripts/overview_analysis/hdWGCNA/paper_figures/excel_signatures/Final/"
+signature_names_final <- c("KEGG_DNA_REPLICATION.v2025.1.Hs.grp", "Universal_human.txt")
+sig_1 <- scan(paste0(dir_name, signature_names_final[[1]]), what = "character")
+sig_2 <- scan(paste0(dir_name, signature_names_final[[2]]), what = "character")
+Naive_signature <- c(
+    "CCR7+", "PASK+", "NELL2+", "SELL+", "LDHB+", "RCAN3+", "CPA5+", "SPINT2+", "BEX3+", "TCF7+", "BEX2+", "LEF1-AS1+", "LEF1+", "LEPROTL1+", "CAMK4+",
+    "PRF1-", "NKG7-", "EFHD2-", "ADRB2-", "GZMA-", "S1PR5-", "C12ORF75-", "CCL4-", "GZMB-", "PLEK-", "CX3CR1-", "GNLY-", "GZMH-", "CTSC-", "ZEB2-"
+)
+
+# I could also include more such as "BACH2" "BCF2" "ID3"
+final_list <- list(
+    "DNA_replication" = sig_1[4:length(sig_1)],
+    "senescence" = sig_2,
+    "nativity" = Naive_signature
+)
+```
+
+```{R run signature}
+seurat_obj_module <- AddModuleScore_UCell(seurat_obj,
+    features = final_list
+)
+
+seurat_obj_module@meta.data %>% colnames()
+```
+
+
+```{R plotting the correlation}
+seurat_obj_module$CD8A_expression <- FetchData(seurat_obj_module, "CD8A")
+seurat_obj_module$CXCL13_expression <- FetchData(seurat_obj_module, "CXCL13")
+cur_traits_final <- c(
+    "CXCL13_expression", "DNA_replication_UCell",
+    "senescence_UCell", "nativity_UCell",
+    "CD8A_expression"
+)
+correlation_plot <- function(seurat_obj, cur_trait_vec = cur_traits, group = "cells_of_interest", plot_max_var = 0.5) {
+    seurat_obj <- ModuleTraitCorrelation(
+        seurat_obj,
+        traits = cur_trait_vec,
+        group.by = group
+    )
+    plot_cor <- PlotModuleTraitCorrelation(
+        seurat_obj,
+        label = "fdr",
+        label_symbol = "stars",
+        text_size = 2,
+        text_digits = 2,
+        text_color = "white",
+        high_color = "yellow",
+        mid_color = "black",
+        low_color = "purple",
+        plot_max = plot_max_var,
+        combine = TRUE
+    )
+    return(plot_cor)
+}
+```
+
+
+```{R plotting}
+png(filename = paste0(figure_output, "03_C_Module_correlation.png"), width = 600, height = 600)
+plot <- correlation_plot(seurat_obj_module, group = "generalised_ann_1", cur_trait_vec = cur_traits_final, plot_max_var = 0.35)
+plot
+dev.off()
+```

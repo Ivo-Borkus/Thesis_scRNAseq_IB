@@ -635,11 +635,3 @@ gse <- gseGO(
 
 gseaplot(gse, by = "all", title = gse$Description[1], geneSetID = 1)
 ```
-p <- multi_dittoPlot(tseur, var = c("percent_mt","doublet.score","percent.rb","nFeature_RNA","nCount_RNA"), group.by = "ann_lvl_2_Tcells_specific", plots = c("vlnplot","jitter")
-,list.out = TRUE)
-
-g <- do.call(grid.arrange,p)
-ggsave(filename = paste0(output_figs,"violin_of_stats.png"),g)
-
-g <- VlnPlot(tseur, features = c("percent_mt","doublet.score","percent.rb","nFeature_RNA","nCount_RNA"), group.by = "ann_lvl_2_Tcells_specific")
-ggsave(filename = paste0(output_figs,"violin_of_stats.png"),g, width = 15, height = 15)

@@ -1,0 +1,119 @@
+---
+title: "Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+params:
+    dataset_name: "Lee"
+    cell_type: "T_cells"
+
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, fig.width = 20, fig.height = 20)
+```
+
+
+# Loading libraries and setting directories
+```{R loading libraries, include = F, echo = T}
+library(Seurat)
+
+# plotting and data science packages
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+
+# co-expression network analysis packages:
+library(WGCNA)
+library(hdWGCNA)
+library(knitr)
+# using the cowplot theme for ggplot
+theme_set(theme_cowplot())
+
+# set random seed for reproducibility
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+source("02_scripts/101_processing_external_datasets/qc_functions.R")
+set.seed(1123)
+# optionally enable multithreading
+enableWGCNAThreads(nThreads = 8)
+figure_output <- "02_scripts/overview_analysis/03_Figure/final_figs/"
+```
+
+
+```{R loading in data}
+seurat_obj <- readRDS(file = paste0("03_processing/101_processing_exernal/data/optimising_hdWGCNA/Inhous_hvf_5000_nnp_25_max_shared_10_seurat_processed_final.rds"))
+```
+
+
+```{R function for seurat preprocessing}
+seurat_pca_processing <- function(seurat_obj, reduction_name, sample_col, mt_regression = TRUE, features = 2000) {
+    seurat_obj[["RNA"]] <- split(seurat_obj[["RNA"]], f = seurat_obj@meta.data[[sample_col]])
+    seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = "vst", nfeatures = features, verbose = TRUE)
+    hvf_info <- HVFInfo(seurat_obj)
+    top_variable_genes <- hvf_info[order(hvf_info$variance.standardized, decreasing = TRUE), ]
+    top_x_genes <- rownames(top_variable_genes)[1:features]
+    VariableFeatures(seurat_obj) <- top_x_genes
+    if (mt_regression == FALSE) {
+        print("Don't regress for anything and proceed")
+        seurat_obj <- ScaleData(object = seurat_obj, features = top_x_genes, verbose = FALSE)
+    } else {
+        print("Regressing for: percent_mt")
+        seurat_obj <- ScaleData(object = seurat_obj, vars.to.regress = c("percent_mt"), features = top_x_genes, verbose = FALSE)
+    }
+    seurat_obj <- ScaleData(object = seurat_obj, vars.to.regress = c("percent_mt"), features = top_x_genes, verbose = FALSE)
+    seurat_obj <- RunPCA(
+        object = seurat_obj, nfeatures.print = 5, ndims.print = 1:2, reduction.name = paste0("pca_", reduction_name)
+    )
+    print(ElbowPlot(seurat_obj, reduction = paste0("pca_", reduction_name), ndims = 100))
+    print(VizDimLoadings(seurat_obj, dims = 1:5, reduction = paste0("pca_", reduction_name), nfeatures = 15))
+    return(seurat_obj)
+}
+seurat_harmony_processing <- function(seurat_obj, reduction_name, dims_n = 25) {
+    seurat_obj <- IntegrateLayers(
+        object = seurat_obj, method = HarmonyIntegration,
+        orig.reduction = paste0("pca_", reduction_name), new.reduction = paste0("harmony_pca.", reduction_name),
+        verbose = TRUE
+    )
+    seurat_obj <- FindNeighbors(seurat_obj, reduction = paste0("harmony_pca.", reduction_name), dims = 1:dims_n)
+    seurat_obj <- RunUMAP(seurat_obj, reduction = paste0("harmony_pca.", reduction_name), dims = 1:dims_n, reduction.name = paste0("umap.harmony.", reduction_name))
+    seurat_obj <- JoinLayers(seurat_obj)
+    return(seurat_obj)
+}
+```
+
+
+```{R prepping seurat}
+seurat_obj <- seurat_pca_processing(seurat_obj, reduction_name = "Tcells", sample_col = "primary_sample")
+seurat_obj <- seurat_harmony_processing(seurat_obj, reduction_name = "Tcells")
+```
+
+```{R moduleexpression}
+# seurat_obj <- ModuleExprScore(
+#     seurat_obj,
+#     n_genes = 25,
+#     method = "UCell"
+# )
+plot_list <- ModuleFeaturePlot(
+    seurat_obj,
+    features = "hMEs", # plot the hMEs
+    order = TRUE, # order so the points with highest hMEs are on top
+    reduction = paste0("umap.harmony.", "Tcells")
+)
+
+pdf(paste0(figure_output, "figure_3_B_module_features_2000HVF.pdf"), width = 15, height = 15) # Increase width
+
+wrap_plots(plot_list, ncol = 2)
+
+dev.off()
+# module_feature_plots(seurat_obj, reduction_var = "Inhouse_im_T_cells")
+```
+
+
+
+```{R}
+sessionInfo()
+```

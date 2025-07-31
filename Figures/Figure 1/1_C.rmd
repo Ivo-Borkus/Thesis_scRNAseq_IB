@@ -1,0 +1,80 @@
+
+---
+title: "1-A"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, fig.width = 15, fig.height = 15)
+```
+
+# Loading packages
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+# devtools::install_github("immunogenomics/lisi")
+library(lisi)
+library(dplyr)
+library(ggplot2)
+library(purrr)
+library(here)
+library(tidyr)
+library(ggrepel)
+library(gridExtra)
+library(patchwork)
+library(dittoSeq)
+library(RColorBrewer)
+
+
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+input_data <- "02_scripts/overview_analysis/01_Figure/data/"
+output_figs <- "02_scripts/presentation_figures/"
+```
+
+# Loading seurat object
+```{R seurat}
+seurat_obj <- readRDS(file = paste0(input_data, "seurat_annotated_correctly.rds"))
+```
+
+```{R preparing the order of the clusters}
+# Order I want:
+order <- c("Tumour", "Brain", "T-cells", "Myeloid", "B-cells")
+color_lvl_1 <- brewer.pal(n = 5, name = "Set1")
+# Making sure dittoseq also follows it: (as there is a mismatch between levels and metalevels)
+# Read this thread: https://github.com/satijalab/seurat/issues/4201
+seurat_obj$ann_lvl_1_total <- factor(seurat_obj$ann_lvl_1_total, levels = order)
+cluster_order <- match(levels(seurat_obj@meta.data[["ann_lvl_1_total"]]), metaLevels("ann_lvl_1_total", seurat_obj))
+x_order <- match(levels(seurat_obj@meta.data[["primary_sample"]]), metaLevels("primary_sample", seurat_obj))
+```
+
+
+```{R making the figure}
+obj <- dittoBarPlot(seurat_obj, var = "ann_lvl_1_total", group.by = "primary_sample", color.panel = color_lvl_1, var.labels.reorder = cluster_order, x.reorder = x_order, scale = "percent", data.out = TRUE)
+obj$data$percent <- obj$data$percent * 100
+
+p <- ggplot(data = obj$data, aes(x = grouping, y = percent, color = label, fill = label)) +
+  geom_bar(stat = "identity") +
+  scale_color_manual(values = color_lvl_1) +
+  scale_fill_manual(values = color_lvl_1) +
+  theme_minimal() +
+  scale_y_continuous(expand = c(0, 0)) +
+  geom_hline(yintercept = c(25, 50, 75), linetype = "dashed") +
+  theme(axis.text = element_text(size = 15), axis.title = element_text(size = 20), legend.text = element_text(size = 20)) & labs(x = "Sample", y = "Percentage")
+p
+```
+
+
+```{R saving figure, eval = F}
+ggsave(file = paste0(output_figs, "A_all_composition_correct.png"), width = 10, height = 10)
+```
+
+```{R session}
+sessionInfo()
+```
+

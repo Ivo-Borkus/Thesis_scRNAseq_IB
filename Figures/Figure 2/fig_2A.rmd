@@ -1,0 +1,100 @@
+
+---
+title: "2-A"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, fig.width = 15, fig.height = 15)
+```
+
+# Loading packages
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+# devtools::install_github("immunogenomics/lisi")
+library(lisi)
+library(dplyr)
+library(ggplot2)
+library(purrr)
+library(here)
+library(tidyr)
+library(ggrepel)
+library(gridExtra)
+library(patchwork)
+library(dittoSeq)
+library(RColorBrewer)
+
+
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+input_data <- "02_scripts/overview_analysis/01_Figure/data/"
+output_figs <- "02_scripts/presentation_figures/"
+```
+
+# Loading seurat object
+```{R loading seurat}
+seurat_obj <- readRDS(file = paste0(input_data, "seurat_annotated_correctly.rds"))
+```
+
+
+```{R subsetting seurat for Tcells}
+# seurat_obj$ann_lvl_1_total %>%    table()
+seurat_obj_Tcells <- subset(seurat_obj, subset = ann_lvl_1_total == "T-cells")
+```
+
+```{R setting order}
+# Order I want:
+order_plot <- c("Proliferating_CD4_Tcells", "Proliferating_CD8_Tcells", "Naive_Tcells", "Effector_memory_CD8_Tcells", "Effector_CD8_Tcells", "Exhausted_CD8_Tcells", "Texterm_CD8", "Regulatory_Tcells", "Helper_Tcells", "Active_Tcells", "IFN_response_Tcells", "NK", "GD_NKT_CD8_Tcells")
+color_lvl_3 <- c("#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4", "#46f0f0", "#f032e6", "#bcf60c", "#fabebe", "#008080", "#e6beff", "#9a6324", "#fffac8", "#800000", "#aaffc3", "#808000", "#ffd8b1", "#000075", "#808080", "#ffffff", "#000000")
+# Colname to plot
+column_interest <- "ann_T_1"
+```
+
+```{R order function} 
+# Making sure dittoseq also follows it: (as there is a mismatch between levels and metalevels)
+# Read this thread: https://github.com/satijalab/seurat/issues/4201
+ordering_ditto <- function(seurat_obj, order, column) {
+    if (any(is.na(factor(seurat_obj@meta.data[[column]], levels = order)))) {
+        stop("There is NA present in your dataset based on the order you provided")
+    } else {
+        seurat_obj@meta.data[[column]] <- factor(seurat_obj@meta.data[[column]], levels = order)
+        cluster_order <- match(levels(seurat_obj@meta.data[[column]]), metaLevels(column, seurat_obj))
+
+        x_order <- match(levels(seurat_obj@meta.data[["primary_sample"]]), metaLevels("primary_sample", seurat_obj)) # optional
+        return(list(cluster_order, x_order))
+    }
+}
+```
+
+```{R making the figure}
+order_ditto <- ordering_ditto(seurat_obj_Tcells, order = order_plot, column = column_interest)
+
+obj <- dittoBarPlot(seurat_obj_Tcells, var = column_interest, group.by = "primary_sample", var.labels.reorder = order_ditto[[1]], x.reorder = order_ditto[[2]], data.out = TRUE)
+
+obj$data$percent <- obj$data$percent * 100
+
+p <- ggplot(data = obj$data, aes(x = grouping, y = percent, color = label, fill = label)) +
+    geom_bar(stat = "identity") +
+    scale_color_manual(values = color_lvl_3) +
+    scale_fill_manual(values = color_lvl_3) +
+    theme_minimal() +
+    scale_y_continuous(expand = c(0, 0)) +
+    geom_hline(yintercept = c(25, 50, 75), linetype = "dashed") +
+    theme(axis.text = element_text(size = 15), axis.title = element_text(size = 20), legend.text = element_text(size = 20)) & labs(x = "Sample", y = "Percentage")
+p
+```
+
+
+```{R saving image}
+ggsave(file = paste0(output_figs, "A_fig2.png"), width = 12, height = 9)
+```
+
+```{R session}
+sessioninfo()
+```
