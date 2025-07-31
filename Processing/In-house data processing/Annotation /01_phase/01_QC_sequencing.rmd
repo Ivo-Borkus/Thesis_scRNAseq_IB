@@ -1,0 +1,255 @@
+---
+title: "Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 1
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(ggrepel)
+library(paletteer)
+library(gridExtra)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+# here::i_am("02_scripts/QC_sequencing.rmd")
+```
+
+
+# Sample info
+```{R extracting useful info, eval = FALSE, include = FALSE, message = FALSE}
+sample_id <- c(
+    "105086-009-002",
+    "105086-009-003",
+    "105086-009-005",
+    "105086-009-009",
+    "105946-002-002",
+    "105946-002-003",
+    "105946-002-004",
+    "105946-002-005"
+)
+sample_fullid <- c(
+    "105086-009-002_BrM23-24", "105086-009-003_BrM23-25",
+    "105086-009-005_BrM24-03", "105086-009-009_BrM24-08",
+    "105946-002-002_BrM23-17_5-Prime-Sorted", "105946-002-003_BrM2318_5-prime-sorted",
+    "105946-002-004_BrM23-18_5-Prime-Unsorted", "105946-002-005_BrM24-01_5-Prime-Unsorted"
+)
+csv_list <- purrr::map(sample_id, function(sample) {
+    # corresponding sample Id with folder name
+    index <- match(sample, sample_id) # sample_fullid[index]
+    ## Extracting the CSV from cellranger outputs given the sample_names and directory names.
+
+    csv <- read.csv(here("01_data", sample_fullid[index], sample, "outs/per_sample_outs", sample, "metrics_summary.csv"))
+    csv$Metric.Value <- as.character(csv$Metric.Value) # To make sure they are all the same class
+    csv <- csv %>%
+        group_by(Metric.Name) %>%
+        summarise(across(everything(), first), .groups = "drop") ## Get rid of redundant information
+    csv$sample_name <- sample
+    csv$sample_fullname <- sample_fullid[index]
+    csv <- csv %>%
+        select(sample_name, sample_fullname, Metric.Name, Metric.Value) %>%
+        pivot_wider(names_from = Metric.Name, values_from = Metric.Value)
+    ## Get the data in a way that contains a sample per row and useful info on each column name, instead of a long db
+})
+meta_data <- bind_rows(csv_list) # Combine all of the datasets (which were 1 row each) together.
+
+write.csv(meta_data, here("03_processing/01_QC/data/meta_data.csv"))
+```
+
+```{R processing csv, echo = FALSE, message = FALSE}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+
+## Getting out the percentage signs in the columns
+percentage_list <- sapply(meta_data, function(column) {
+    any(grepl("%$", column))
+})
+meta_data[percentage_list] <- lapply(meta_data[percentage_list], function(x) as.numeric(sub("%", "", x)))
+conv_data <- type_convert(meta_data) # Convert all of the characters back into numeric etc.
+```
+
+```{R}
+knitr::kable(conv_data[, 1:4], format = "markdown")
+```
+# Sequencing QC
+
+```{R cell count figure, echo = FALSE, message=FALSE}
+cell_count_gg <- ggplot(
+    data = conv_data,
+    mapping = aes(x = sample_name, y = Cells, fill = sample_name)
+) +
+    geom_col() +
+    scale_fill_paletteer_d("ggsci::default_nejm") +
+    labs(
+        title = "Cell count per sample",
+        x = "Sample name",
+        y = "Number of cells detected"
+    ) +
+    theme(
+        axis.title.x = element_text(),
+        axis.title.y = element_text(),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none",
+        axis.title = element_text()
+    ) +
+    geom_text(aes(label = Cells),
+        vjust = -1.5
+    )
+ggsave(here("03_processing/01_QC/figs/cell_count_gg.pdf"), plot = cell_count_gg)
+```
+
+
+```{R faceted_plots, echo = FALSE}
+confident_data <- conv_data %>%
+    select(
+        Confidently.mapped.to.genome,
+        Confidently.mapped.to.transcriptome,
+        Confidently.mapped.to.exonic.regions,
+        Confidently.mapped.to.intronic.regions,
+        Confidently.mapped.to.intergenic.regions,
+        Confidently.mapped.antisense, everything()
+    ) ## Ordering the columns.
+colnames_list <- names(confident_data[grepl("Confidently", colnames(confident_data))])[-7] ## getting the interesting columns to plot
+conv_data_long <- confident_data %>%
+    pivot_longer(cols = all_of(colnames_list), names_to = "Variable", values_to = "Value") # To plot the columns in a facet, use the pivot_longer.
+conv_data_long$Variable <- factor(conv_data_long$Variable, level = unique(conv_data_long$Variable)) ## Making sure that the order is as defined before
+
+# Plot using facet_wrap
+facet_important_gg <- ggplot(conv_data_long, aes(x = sample_name, y = Value, fill = sample_name)) +
+    geom_col() +
+    geom_text(aes(label = round(Value, 1), vjust = 2)) +
+    theme(
+        axis.text.y = element_text(),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none"
+    ) +
+    facet_wrap(~Variable, nrow = 4, ncol = 2, scales = "free_y") +
+    scale_fill_paletteer_d("ggsci::default_nejm") +
+    labs(y = "Percentage", x = "Sample name")
+
+
+ggsave(here("03_processing/01_QC/figs/facet_important_gg.pdf"), plot = facet_important_gg, width = 10, height = 10)
+```
+
+
+
+
+
+```{R plotting reads in total, include = FALSE}
+conv_data$NRIL_mil <- sapply(conv_data$Number.of.reads.in.the.library, function(number) {
+    number / 1000000
+})
+
+
+
+reads_per_library <- ggplot(
+    data = conv_data,
+    mapping = aes(x = sample_name, y = NRIL_mil, fill = sample_name)
+) +
+    geom_col() +
+    scale_fill_paletteer_d("ggsci::default_nejm") +
+    labs(
+        title = "Library size",
+        x = "Sample name",
+        y = "Number of reads in million"
+    ) +
+    theme(
+        axis.title.x = element_text(),
+        axis.title.y = element_text(),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none",
+        axis.title = element_text()
+    ) +
+    geom_text(aes(label = round(NRIL_mil)),
+        size = 4,
+        vjust = 2
+    )
+```
+
+
+
+
+```{R plotting saturation, include = FALSE}
+conv_data$sample_name <- factor(conv_data$sample_name, levels = unique(conv_data$sample_name)) ## Making sure that the order is as defined before
+
+sequencing_sat_plot <- ggplot(
+    data = conv_data,
+    mapping = aes(x = Mean.reads.per.cell / 1000, y = Sequencing.saturation, colour = sample_name)
+) +
+    geom_point() +
+    geom_text_repel(aes(label = sample_name)) +
+    scale_color_paletteer_d("ggsci::default_nejm") +
+    theme(legend.position = "none") +
+    labs(title = "Sequencing saturation plot", x = "Mean reads per cell in thousands", y = "Sequencing saturation %")
+```
+
+
+```{R plotting total genes vs reads, include = FALSE}
+gene_total_vs_reads <- ggplot(
+    data = conv_data,
+    mapping = aes(x = Mean.reads.per.cell / 1000, y = Total.genes.detected, color = sample_name)
+) +
+    geom_point() +
+    scale_color_paletteer_d("ggsci::default_nejm") +
+    geom_text_repel(aes(label = sample_name)) +
+    theme(legend.position = "none") +
+    labs(title = "Mean genes per cell vs total genes detected", x = "Mean reads per cell in thousands", y = "Total genes detected")
+```
+
+```{R plotting median genes vs reads, include = FALSE}
+gene_median_vs_reads <- ggplot(
+    data = conv_data,
+    mapping = aes(x = Mean.reads.per.cell / 1000, y = Median.genes.per.cell, color = sample_name)
+) +
+    geom_point() +
+    scale_color_paletteer_d("ggsci::default_nejm") +
+    geom_text_repel(aes(label = sample_name)) +
+    theme(legend.position = "none") +
+    labs(title = "Mean genes per cell vs median genes detected in cells", x = "Mean reads per cell in thousands", y = "Median genes detected in cells")
+```
+
+
+
+```{R total genes per reads, include = FALSE}
+library_size_v_genes <- ggplot(
+    data = conv_data,
+    mapping = aes(x = Mean.reads.per.cell / 1000, y = Median.genes.per.cell, color = sample_name)
+) +
+    geom_point() +
+    scale_color_paletteer_d("ggsci::default_nejm") +
+    geom_text_repel(aes(label = sample_name)) +
+    theme(legend.position = "none") +
+    labs(title = "Number of reads per sample vs genes detected", x = "Number of reads in million", y = "Total number of genes detected")
+```
+
+
+
+```{R plotting, fig.align="center", echo = FALSE,fig.width=10,fig.height=10}
+cell_count_gg
+facet_important_gg
+```
+
+```{R plotting_2, fig.align="center", echo = FALSE,fig.width=10,fig.height=10}
+grid.arrange(reads_per_library,
+    sequencing_sat_plot,
+    gene_median_vs_reads,
+    library_size_v_genes,
+    ncol = 2, nrow = 2
+)
+```
+

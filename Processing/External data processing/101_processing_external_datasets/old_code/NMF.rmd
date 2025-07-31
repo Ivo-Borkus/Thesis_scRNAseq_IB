@@ -1,0 +1,230 @@
+---
+title: "Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 1
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+
+
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(ggrepel)
+# library(paletteer)
+library(Matrix)
+library(gridExtra)
+# install.packages("nrscrublet")
+# remotes::install_github("iaaaka/Rscrublet")
+library(rscrublet)
+
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+# here::i_am("02_scripts/QC_sequencing.rmd")
+
+source("02_scripts/101_processing_external_datasets/qc_functions.R")
+set.seed(1123)
+```
+
+
+```{R}
+cell_anno_list <- list(
+  Biermann_main = "cell_type_main",
+  Biermann_fine = "cell_type_fine",
+  Biermann_int = "cell_type_int",
+  Biermann_immune = "ct_immune",
+  Biermann_cycling = "cell_cycle",
+  Gonzalez_type = "Cell_Type",
+  Lee_type = "Cell_type",
+  Lee_refined = "Cell_type.refined",
+  Lee_subtype = "Cell_subtype"
+)
+```
+
+
+```{R}
+processed_seurat <- readRDS("03_processing/101_processing_exernal/data/immune/processed_seurat_list_immune_2.rds")
+cells <- lapply(processed_seurat, function(x) {
+  ncol(x)
+})
+sum(unlist(cells))
+seurat_obj <- processed_seurat[[1]]
+obj <- JoinLayers(seurat_obj)
+matrix_Lnorm <- obj[["RNA"]]$data
+## rank 30, RcppML::nmf can take sparse matrix as input
+## the {NMF} R package needs a dense matrix
+## remember to set the seed to make it reproducible
+model <- RcppML::nmf(matrix_Lnorm, 10, verbose = T, seed = 1234)
+
+
+w <- model$w
+d <- model$d
+h <- model$h
+
+## amplitude matrix
+dim(w)
+```
+
+
+```{R}
+rownames(w) <- rownames(matrix_Lnorm)
+colnames(w) <- paste0("component", 1:10)
+
+## pattern matrix
+dim(h)
+
+
+rownames(h) <- paste0("component", 1:10)
+colnames(h) <- colnames(matrix_Lnorm)
+```
+
+
+```{R}
+# library(devtools)
+# devtools::install_github("crazyhottommy/scclusteval")
+# library(scclusteval)
+t(h) %>% head()
+kmeans_NMF_res <- kmeans(t(h), centers = 9)
+kmeans_NMF_clusters <- kmeans_NMF_res$cluster
+
+conf_mat <- table(Actual = obj$cell_type_int, Predicted = kmeans_NMF_res$cluster)
+conf_df <- as.data.frame(conf_mat)
+
+colnames(conf_df) <- c("Actual", "Predicted", "Count")
+ggplot(conf_df, aes(x = Predicted, y = Actual, fill = Count)) +
+  geom_tile() +
+  geom_text(aes(label = Count), color = "white", size = 6) +
+  scale_fill_gradient(low = "lightblue", high = "red") +
+  theme_minimal() +
+  labs(title = "KNN Confusion Matrix Heatmap")
+
+
+
+conf_df$RowSum <- ave(conf_df$Count, conf_df$Predicted, FUN = sum)
+
+# Calculate row-wise proportion (normalized value)
+conf_df$Proportion <- conf_df$Count / conf_df$RowSum
+ggplot(conf_df, aes(x = Predicted, y = Actual, fill = Proportion)) +
+  geom_tile() +
+  geom_text(aes(label = round(Proportion, 2)), color = "white", size = 5) +
+  scale_fill_gradient(low = "lightblue", high = "darkred") +
+  theme_minimal() +
+  labs(
+    title = "KNN Confusion Matrix Heatmap (Row-wise Normalized)",
+    fill = "Proportion"
+  )
+
+# Heatmap using ggplot2
+# check how the k-means clusters corresponds to the graph-based clusters
+# PairWiseJaccardSetsHeatmap(obj$cell_type_int, kmeans_NMF_clusters)
+
+
+
+conf_df$RowSum <- ave(conf_df$Count, conf_df$Actual, FUN = sum)
+
+# Calculate row-wise proportion (normalized value)
+conf_df$Proportion <- conf_df$Count / conf_df$RowSum
+ggplot(conf_df, aes(x = Predicted, y = Actual, fill = Proportion)) +
+  geom_tile() +
+  geom_text(aes(label = round(Proportion, 2)), color = "white", size = 5) +
+  scale_fill_gradient(low = "lightblue", high = "darkred") +
+  theme_minimal() +
+  labs(
+    title = "KNN Confusion Matrix Heatmap (Row-wise Normalized)",
+    fill = "Proportion"
+  )
+```
+
+
+```{R}
+cell_anno_list <- list(
+  Biermann = c("cell_type_main", "cell_type_fine", "cell_type_int", "ct_immune", "cell_cycle"),
+  Gonzalez = c("Cell_Type"),
+  Lee = c("Cell_type", "Cell_type.refined", "Cell_subtype")
+)
+
+
+nmf_df <- t(h) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "barcodes_seurat") %>%
+  left_join(obj@meta.data)
+
+obj@meta.data %>% colnames()
+
+cell_cols <- cell_anno_list[[1]]
+
+
+
+plots <- lapply(colnames(nmf_df)[2:11], function(x) {
+  if (x == "component10") {
+    p1 <- ggplot(nmf_df, aes(x = cell_type_int, y = .data[[x]])) +
+      geom_point(aes(color = cell_type_int)) +
+      theme_classic(base_size = 14) +
+      guides(color = guide_legend(override.aes = list(size = 3))) +
+      xlab("") +
+      theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+  } else {
+    p1 <- ggplot(nmf_df, aes(x = cell_type_int, y = .data[[x]])) +
+      geom_point(aes(color = cell_type_int)) +
+      theme_classic(base_size = 14) +
+      guides(color = guide_legend(override.aes = list(size = 3))) +
+      xlab("") +
+      theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) & NoLegend()
+  }
+})
+
+output_figs <- "03_processing/101_processing_exernal/figs/immune_2/"
+
+ggsave(
+  filename = paste0(output_figs, "plots.png"),
+  plot = marrangeGrob(plots, nrow = 3, ncol = 4),
+  width = 15, height = 15
+)
+
+library(patchwork)
+wrap_plots(plots)
+```
+
+```{R}
+w %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "gene") %>%
+  arrange(desc(component10)) %>%
+  pull(gene) %>%
+  head()
+
+w %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "gene") %>%
+  arrange(desc(component2)) %>%
+  pull(gene) %>%
+  head()
+```
+
+
+
+
+
+
+
+```{R, eval = F}
+rmarkdown::render(
+  input = paste0("02_scripts/101_processing_external_datasets/NMF.rmd"),
+  output_format = "html_document",
+  output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits",
+  output_file = paste0("NMF.html")
+)
+```

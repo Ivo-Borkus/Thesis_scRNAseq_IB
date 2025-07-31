@@ -1,0 +1,230 @@
+# Chapter 1: Quality control 
+## Sample cell count
+
+```{R cell count, echo = FALSE, message = FALSE, fig.height = 10}
+nejm_colors <- paletteer::paletteer_d(
+    "ggsci::default_nejm", length(levels(as.factor(meta_data$sample_name)))
+)
+conv_data <- type_convert(meta_data) # Convert all of the characters back into numeric etc.
+
+conv_data <- conv_data %>%
+    mutate(highlight = ifelse(sample_name == sample, "highlight", "default"))
+
+cell_count_gg <- ggplot(
+    data = conv_data,
+    mapping = aes(x = sample_name, y = Cells, fill = highlight)
+) +
+    geom_col() +
+    scale_fill_manual(values = c("highlight" = nejm_colors[index], "default" = "grey")) + # Custom colors
+    labs(
+        title = "Cell count per sample",
+        x = "Sample name",
+        y = "Number of cells detected"
+    ) +
+    theme(
+        axis.title.x = element_text(),
+        axis.title.y = element_text(),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none",
+        axis.title = element_text()
+    ) +
+    geom_text(aes(label = Cells), vjust = -1.5)
+
+cell_count_gg
+```
+
+
+
+```{R adjusting minimal settings, echo = FALSE, include = FALSE, eval = TRUE}
+maxUMI <- max(seurat_obj@meta.data$nCount_RNA) + 1
+# minUMI <- ifelse(minUMI > min(seurat_obj@meta.data$nCount_RNA),
+#     minUMI, min(seurat_obj@meta.data$nCount_RNA)
+# )
+# minfeat <- ifelse(minfeat > min(seurat_obj@meta.data$nFeature_RNA),
+#     minfeat, min(seurat_obj@meta.data$nFeature_RNA)
+# )
+```
+
+```{R scrublet, include = FALSE}
+scrublet <- function(seurat_obj) {
+    count_matrix <- t(as(seurat_obj@assays$RNA$counts, "TsparseMatrix"))
+    print(count_matrix[1:2, 1:3])
+    scrr <- scrub_doublets(E_obs = count_matrix, expected_doublet_rate = 0.06, min_counts = 2, min_cells = 3, min_gene_variability_pctl = 85, n_prin_comps = 30)
+    scrr <- call_doublets(scrr)
+    # plot_doublet_histogram(scrr)
+    seurat_obj$doublet.score <- scrr$doublet_scores_obs
+    seurat_obj$predicted.doublets <- scrr$predicted_doublets
+    # print(FeaturePlot(seurat_obj, features = "doublet.score", cols = c("gray", "red")))
+    return(seurat_obj)
+}
+seurat_obj <- scrublet(seurat_obj)
+```
+
+## Indidual quality checks using violin and scatter plots for visualisation
+```{R QC violin plots, echo = FALSE, include = FALSE}
+qc_count_line <- VlnPlot(seurat_obj,
+    features = c("nCount_RNA"),
+    log = FALSE,
+    cols = nejm_colors[index],
+    pt.size = 0
+) & geom_hline(yintercept = minUMI, color = "red") &
+    geom_hline(yintercept = maxUMI, color = "red") &
+    NoLegend() &
+    theme(axis.text.x = element_blank(), plot.title = element_blank())
+
+
+qc_feature_line <- VlnPlot(seurat_obj,
+    features = c("nFeature_RNA"),
+    log = FALSE,
+    cols = nejm_colors[index],
+    pt.size = 0
+) + theme(axis.text.x = element_blank(), plot.title = element_blank()) +
+    geom_hline(yintercept = minfeat, color = "red") +
+    geom_hline(yintercept = maxfeat, color = "red") &
+    NoLegend()
+
+qc_mt_line <- VlnPlot(seurat_obj,
+    features = c("percent_mt"),
+    log = FALSE,
+    cols = nejm_colors[index],
+    pt.size = 0
+) + theme(axis.text.x = element_blank(), plot.title = element_blank()) +
+    geom_hline(yintercept = maxmt, color = "red") &
+    NoLegend()
+```
+
+```{R Histogram plots, echo = FALSE, include=FALSE}
+hist_count_line <- ggplot(
+    data = seurat_obj@meta.data,
+    mapping = aes(x = nCount_RNA)
+) +
+    geom_density(fill = nejm_colors[index]) +
+    labs(title = "Distribution of of UMI count in cells") +
+    geom_vline(xintercept = minUMI, color = "red") +
+    geom_vline(xintercept = maxUMI, color = "red") +
+    theme_minimal() +
+    scale_x_log10()
+
+hist_feat_line <- ggplot(
+    data = seurat_obj@meta.data,
+    mapping = aes(x = nFeature_RNA)
+) +
+    geom_density(fill = nejm_colors[index]) +
+    labs(title = "Distribution of unique genes in cells") +
+    geom_vline(xintercept = minfeat, color = "red") +
+    geom_vline(xintercept = maxfeat, color = "red") +
+    theme_minimal() +
+    scale_x_log10()
+
+hist_mt_line <- ggplot(
+    data = seurat_obj@meta.data,
+    mapping = aes(x = percent_mt)
+) +
+    geom_density(fill = nejm_colors[index]) +
+    labs(title = "Distribution of MT percentage in cells") +
+    geom_vline(xintercept = maxmt, color = "red") +
+    theme_minimal() +
+    scale_x_log10()
+```
+
+```{R Scatter plots, include = FALSE}
+umi_v_mt_lines <- ggplot(
+    data = seurat_obj@meta.data,
+    mapping = aes(x = nCount_RNA, y = percent_mt)
+) +
+    geom_point() +
+    geom_hline(yintercept = maxmt, color = "red") +
+    geom_vline(xintercept = minUMI, color = "red") +
+    geom_vline(xintercept = maxUMI, color = "red") +
+    scale_x_log10() +
+    labs(
+        x = "UMI count", y = "Mitochondrial %"
+    )
+
+
+
+umi_v_genes_mt_col <- ggplot(
+    data = seurat_obj@meta.data,
+    mapping = aes(
+        x = nCount_RNA, y = nFeature_RNA,
+        color = percent_mt,
+        size = percent_mt
+    )
+) +
+    geom_point() +
+    geom_hline(yintercept = minfeat, color = "red") +
+    geom_hline(yintercept = maxfeat, color = "red") +
+    geom_vline(xintercept = minUMI, color = "red") +
+    geom_vline(xintercept = maxUMI, color = "red") +
+    scale_x_log10() +
+    scale_y_log10() +
+    labs(
+        x = "UMI count", y = "Unique genes"
+    )
+
+
+umi_v_genes_doublet_col <- ggplot(
+    data = seurat_obj@meta.data,
+    mapping = aes(
+        x = nCount_RNA, y = nFeature_RNA,
+        color = doublet.score,
+        size = doublet.score
+    )
+) +
+    geom_point() +
+    geom_hline(yintercept = minfeat, color = "red") +
+    geom_hline(yintercept = maxfeat, color = "red") +
+    geom_vline(xintercept = minUMI, color = "red") +
+    geom_vline(xintercept = maxUMI, color = "red") +
+    scale_x_log10() +
+    scale_y_log10() +
+    labs(
+        x = "UMI count", y = "Unique genes"
+    )
+```
+
+
+### Distribution plots
+```{R plotting_1, fig.align="center", echo = FALSE,fig.width=10,fig.height=10, message  = FALSE}
+grid.arrange(hist_count_line, qc_count_line,
+    hist_feat_line, qc_feature_line,
+    hist_mt_line, qc_mt_line,
+    ncol = 2, nrow = 3
+)
+```
+
+### Scatter Plots
+
+```{R plotting_2,  echo = FALSE,fig.width=20,fig.height=15, message  = FALSE}
+grid.arrange(
+    umi_v_genes_mt_col + labs(title = paste0("Sample: ", sample, " UMI count vs MT percentage")),
+    umi_v_genes_doublet_col + labs(title = paste0("Sample: ", sample, " UMI count vs unique gene count in cells coloured by scrublet-score")),
+    umi_v_mt_lines + labs(title = paste0("Sample: ", sample, " UMI count vs unique gene count in cells")),
+    ncol = 2, nrow = 2
+)
+```
+
+## Subsetting data based on the parameters
+
+```{R Subsetting, echo = FALSE, eval = TRUE}
+total_cells <- dim(seurat_obj)[2]
+
+seurat_obj <- subset(
+    seurat_obj,
+    nCount_RNA > minUMI &
+        nCount_RNA < maxUMI &
+        nFeature_RNA > minfeat &
+        nFeature_RNA < maxfeat &
+        percent_mt < maxmt
+)
+
+subset_cells <- dim(seurat_obj)[2]
+data_removed <- 100 - ((subset_cells / total_cells) * 100)
+
+###
+
+cat(paste0("Total amount of cells: ", total_cells, "\n"))
+cat(paste0("Percentage of data removed: ", round(data_removed, 2), "%", "\n"))
+cat(paste0("Amount of cells removed: ", total_cells - subset_cells, "\n"))
+cat(paste0("Cells remaining: ", subset_cells))
+```

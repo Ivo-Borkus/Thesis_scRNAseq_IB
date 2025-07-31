@@ -1,0 +1,449 @@
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+# install.packages("languageserver")
+```
+
+```{R general functions, eval =T}
+library(here)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+output_figs <- "03_processing/14_phase_7/figs/"
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+source("02_scripts/04_integration/functions.R")
+source("02_scripts/06_analysing_annotations/utils.R")
+library(scales)
+
+library(dittoSeq)
+```
+
+
+```{R immune cells, echo = TRUE}
+seurat_obj <- readRDS(file ="03_processing/12_phase_5/data/seurat_ann_lvl_2_immune.rds")
+reduction_name <- "immune_no_doub"
+seurat_obj %>% levels()
+```
+
+```{R making barplots for specific subsets}
+level_order <- c("Bad-Quality","Doublets",
+    "Tnaive_b1","Texh_CD8_b" ,"Tnaive_b2"  ,"Proliferating_CD8_1b" ,"Tregs_b","Proliferating_CD8_2b","Teff_CD8_b",
+    "Proliferating_CD8_1a", "Tnaive","Texterm_CD8","Th_cells","Teff_exh_CD8","Teff_CD8", "Proliferating_CD4","Tem_CD8", "Tregs_memory","Proliferating_CD8_2a","Tregs_CCR8","GD_NKT_CD8","Proliferating_CD8_gd","NK","IFN_response","Tactive",
+    "Monocytes","Macrophages" , "Neutrophils" ,"Macrophage_OTOA", "CD1CA+_A" ,"Monocytic_MDSCs","Microglia","pDCs","Macrophage_SPP1","cDC1","mregDCs",
+    "PlasmaCells","Bcells" )
+# levels(seurat_obj) <-level_order
+seurat_obj@meta.data$ann_lvl_2 <- factor(seurat_obj@meta.data$ann_lvl_2, levels = level_order)
+cluster_order <- match(levels(seurat_obj@meta.data[["ann_lvl_2"]]), metaLevels("ann_lvl_2", seurat_obj))
+dittoBarPlot(seurat_obj, "ann_lvl_2", color.panel = color_panel_1,group.by = "primary_sample",var.labels.reorder =cluster_order)
+
+
+barplot_1 <- list(
+    bad_quality = c("Bad-Quality","Doublets"),
+    Tcells_high_mitochondrial = c("Tnaive_b1","Texh_CD8_b" ,"Tnaive_b2"  ,"Proliferating_CD8_1b" ,"Tregs_b","Proliferating_CD8_2b","Teff_CD8_b"),
+    Tcells_low_mitochondrial = c("Proliferating_CD8_1a", "Tnaive","Texterm_CD8","Th_cells","Teff_exh_CD8","Teff_CD8", "Proliferating_CD4","Tem_CD8", "Tregs_memory","Proliferating_CD8_2a","Tregs_CCR8","GD_NKT_CD8","Proliferating_CD8_gd","NK","IFN_response","Tactive"),
+    Myeloid = c("Monocytes","Macrophages" , "Neutrophils" ,"Macrophage_OTOA", "CD1CA+_A" ,"Monocytic_MDSCs","Microglia","pDCs","Macrophage_SPP1","cDC1","mregDCs"),
+    B_cells = c("PlasmaCells","Bcells" )
+)
+barplot_1$Tcells_high_mitochondrial
+
+
+seurat_obj@meta.data <- seurat_obj@meta.data %>%
+    mutate(barplot_1 = case_when(
+        ann_lvl_2 %in% barplot_1$bad_quality ~ "Bad Quality",
+        ann_lvl_2 %in% barplot_1$Tcells_high_mitochondrial ~ "T cells high mitochondrial",
+        ann_lvl_2 %in% barplot_1$Tcells_low_mitochondrial ~ "T cells low mitochondrial",
+        ann_lvl_2 %in% barplot_1$Myeloid ~ "Myeloid",
+        ann_lvl_2 %in% barplot_1$B_cells ~ "B cells"
+        
+    ))
+seurat_obj@meta.data$barplot_1 %>% unique()
+levels(seurat_obj@meta.data$barplot_1) <- c("Bad Quality","T cells high mitochondrial","T cells low mitochondrial","Myeloid","B cells")
+cluster_order <- match(levels(seurat_obj@meta.data[["barplot_1"]]), metaLevels("barplot_1", seurat_obj))
+
+
+dittoBarPlot(seurat_obj, "barplot_1", color.panel = c("black","darkgreen","lightgreen","orange","blue"),group.by = "primary_sample",var.labels.reorder =cluster_order)
+ggsave(filename="03_processing/14_phase_7/figs/barplot_per_meta-level.png")
+```
+
+```{R creating volcano plots, include = TRUE}
+volcano_plotting <- function(marker_list, ident.1 = "", ident.2 = "") {
+    marker_list$genes <- row.names(marker_list)
+    marker_list$diffexpressed <- "NO"
+    marker_list$diffexpressed[marker_list$avg_log2FC > 1.5 & marker_list$p_val_adj < 0.05] <- "UP"
+    marker_list$diffexpressed[marker_list$avg_log2FC < -1.5 & marker_list$p_val_adj < 0.05] <- "DOWN"
+    marker_list$diffexpressed[marker_list$avg_log2FC > 1.5 & marker_list$p_val_adj < 0.05] <- "UP"
+    marker_list$diffexpressed[marker_list$avg_log2FC < -1.5 & marker_list$p_val_adj < 0.05] <- "DOWN"
+    # marker_list$delabel <- NA
+    # marker_list$delabel[marker_list$diffexpressed != "NO"] <- row.names(marker_list)[marker_list$diffexpressed != "NO"]
+
+    marker_list$delabel <- NA
+    marker_list$delabel[marker_list$diffexpressed != "NO"] <- row.names(marker_list)[marker_list$diffexpressed != "NO"]
+    marker_list %>%
+        arrange(desc(avg_log2FC)) %>%
+        dplyr::select(avg_log2FC) %>%
+        head(, n = 10) %>%
+        row.names() -> labels_1
+    marker_list %>%
+        arrange(avg_log2FC) %>%
+        dplyr::select(avg_log2FC) %>%
+        head(, n = 10) %>%
+        row.names() -> labels_2
+    labels <- c(labels_1, labels_2)
+    marker_list$delabel <- NA
+    marker_list$delabel[marker_list$genes %in% labels] <- marker_list$genes[marker_list$genes %in% labels]
+    min_above <- min(marker_list$p_val_adj[marker_list$p_val_adj > 0])
+    marker_list$p_val_adj <- ifelse(marker_list$p_val_adj == 0, min_above, marker_list$p_val_adj)
+    volcano_plot <- ggplot(data = marker_list, aes(x = avg_log2FC, y = -log10(p_val_adj), col = diffexpressed, label = delabel)) +
+        geom_point() +
+        geom_text_repel(max.overlaps = Inf) +
+        scale_color_manual(values = c("blue", "black", "red")) +
+        geom_vline(xintercept = c(-1.5, 1.5), col = "red") +
+        geom_hline(yintercept = -log10(0.05), col = "red") & labs(title = paste0("Comparing: ", ident.1, " versus the ", ident.2))
+    return(volcano_plot)
+}
+
+# volcano_plot <- volcano_plotting(marker_list, ident.1 = "Melanoma Tcells", ident.2 = "Other primary Tcells")
+# volcano_plot
+# ggsave(volcano_plot, file = paste0(output_figs, "analysis_plots/volcano_plot_melanoma_tcells.png"))
+```
+
+```{R selecting two groups to compare, echo = TRUE, include = TRUE }
+# For example:
+### Group 1:
+# All cytotoxic CD8 T-cells corresponding to the melanoma primary
+# seurat_obj@meta.data$primary_ann_group <- paste0(seurat_obj@meta.data$primary, "_", seurat_obj@meta.data$ann_lvl_1)
+# group_1 <- subset(seurat_obj, subset = primary_ann_group == "Melanoma_Cytotoxic_CD8")
+# ncol(group_1)
+# table(group_1@meta.data$primary_ann_group)
+# ### Group 2:
+# # All cytotoxic CD8 T-cells corresponding to the other primaries
+# group_2 <- subset(seurat_obj, subset = primary_ann_group %in% c("CUP_Cytotoxic_CD8", "Lung_Cytotoxic_CD8", "Colon_Cytotoxic_CD8"))
+# ncol(group_2)
+# table(group_2@meta.data$primary_ann_group)
+
+# seurat_obj@meta.data <- seurat_obj@meta.data %>%
+#     mutate(groups_compare = case_when(
+#         primary_ann_group == "Melanoma_Cytotoxic_CD8" ~ "Melanoma_Cytotoxic_CD8",
+#         primary_ann_group %in% c("CUP_Cytotoxic_CD8", "Lung_Cytotoxic_CD8", "Colon_Cytotoxic_CD8") ~ "other_Cytotoxic_CD8",
+#         TRUE ~ "not_cytotoxic CD8"
+#     ))
+# table(seurat_obj@meta.data$groups_compare)
+
+# seurat_obj@meta.data$primary_ann_group <- paste0(seurat_obj@meta.data$primary, "_", seurat_obj@meta.data$ann_lvl_1)
+
+level_order <- c("Bad-Quality","Doublets",
+    "Tnaive_b1","Texh_CD8_b" ,"Tnaive_b2"  ,"Proliferating_CD8_1b" ,"Tregs_b","Proliferating_CD8_2b","Teff_CD8_b",
+    "Proliferating_CD8_1a", "Tnaive","Texterm_CD8","Th_cells","Teff_exh_CD8","Teff_CD8", "Proliferating_CD4","Tem_CD8", "Tregs_memory","Proliferating_CD8_2a","Tregs_CCR8","GD_NKT_CD8","Proliferating_CD8_gd","NK","IFN_response","Tactive",
+    "Monocytes","Macrophages" , "Neutrophils" ,"Macrophage_OTOA", "CD1CA+_A" ,"Monocytic_MDSCs","Microglia","pDCs","Macrophage_SPP1","cDC1","mregDCs",
+    "PlasmaCells","Bcells" )
+seurat_obj@meta.data %>% colnames()
+
+celltypes <- c("Tnaive_b1","Texh_CD8_b" ,"Tnaive_b2"  ,"Proliferating_CD8_1b" ,"Tregs_b","Proliferating_CD8_2b","Teff_CD8_b")
+celltypes_2 <- c("Proliferating_CD8_1a", "Tnaive","Texterm_CD8","Th_cells","Teff_exh_CD8","Teff_CD8", "Proliferating_CD4","Tem_CD8", "Tregs_memory","Proliferating_CD8_2a","Tregs_CCR8","GD_NKT_CD8","Proliferating_CD8_gd","NK","IFN_response","Tactive")
+
+seurat_obj@meta.data <- seurat_obj@meta.data %>%
+    mutate(cells_of_interest = case_when(
+        ann_lvl_2 %in% celltypes ~ "High_mt",
+        ann_lvl_2 %in% celltypes_2 ~ "low_mt",
+        TRUE ~ "Other"
+    ))
+
+# seurat_obj@meta.data <- seurat_obj@meta.data %>%
+#     mutate(cells_of_interest = case_when(
+#         ann_lvl_2 %in% celltypes ~ TRUE,
+#         TRUE ~ FALSE
+#     ))
+
+table(seurat_obj@meta.data$cells_of_interest)
+Idents(seurat_obj) <- "cells_of_interest"
+
+marker_list <- FindMarkers(
+    object = seurat_obj,
+    ident.1 = "High_mt", ident.2 = "low_mt",
+    only.pos = F,
+    min.pct = 0.25,
+    logfc.threshold = 0.25
+)
+
+```
+
+
+```{R showing the clusters on a umap, include = TRUE}
+
+
+DimPlot(
+    object = seurat_obj,
+    reduction = paste0("umap.harmony.", reduction_name),
+    pt.size = 0.1,
+    label = TRUE
+) &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+marker_list %>%
+    arrange(desc(abs(avg_log2FC))) %>%
+    dplyr::select(pct.1, pct.2, p_val, p_val_adj, avg_log2FC) %>%
+    head(, n = 10)
+
+
+volcano_plot <- volcano_plotting(marker_list, ident.1 = "High_mt", ident.2 = "low_mt")
+volcano_plot
+```
+
+
+
+```{R adding primary sample information}
+
+seurat_obj@meta.data$cells_of_interest_primary <- paste0(seurat_obj@meta.data$primary, "_", seurat_obj@meta.data$cells_of_interest)
+
+table(seurat_obj@meta.data$cells_of_interest_primary)
+
+
+seurat_obj@meta.data <- seurat_obj@meta.data %>%
+    mutate(groups_compare = case_when(
+        cells_of_interest_primary == "Melanoma_High_mt" ~ "Melanoma_high_cells",
+        cells_of_interest_primary %in% c("Colon_High_mt", "CUP_High_mt", "Lung_High_mt") ~ "Other_high_cells",
+        TRUE ~ "others"
+    ))
+table(seurat_obj@meta.data$groups_compare)
+Idents(seurat_obj) <- "groups_compare"
+
+marker_list <- FindMarkers(
+    object = seurat_obj,
+    ident.1 = "Melanoma_high_cells", ident.2 = "Other_high_cells",
+    only.pos = F,
+    min.pct = 0.25,
+    logfc.threshold = 0.25
+)
+
+volcano_plot <- volcano_plotting(marker_list, ident.1 = "Melanoma high mt cells", ident.2 = "Other high mt cells")
+volcano_plot
+# ggsave(volcano_plot, file = paste0(output_figs, "feature_analysis/volcano_plots/high_mel_vs_others.png"))
+```
+
+
+
+
+
+
+
+### Gene set enrichment analysis
+
+# Loading specific packages
+
+```{R GSEA, include = TRUE}
+library(clusterProfiler)
+organism <- "org.Hs.eg.db"
+library(organism, character.only = T)
+# install.packages("msigdb")
+# library(msigdb)
+# https://bioconductor.org/packages/release/data/experiment/vignettes/msigdb/inst/doc/msigdb.html\
+# https://www.bioconductor.org/packages/devel/bioc/vignettes/fgsea/inst/doc/fgsea-tutorial.html
+# keytypes(org.Hs.eg.db)
+# head(keys(org.Hs.eg.db, keytype = "SYMBOL"))
+
+
+```
+
+```{R trying again}
+seurat_obj@meta.data$cells_of_interest %>% head()
+
+Idents(seurat_obj) <- "cells_of_interest"
+marker_list <- FindMarkers(
+    object = seurat_obj,
+    ident.1 = "High_mt", ident.2 = "low_mt",
+    only.pos = F,
+    min.pct = 0,
+    logfc.threshold = 0
+)
+marker_list$genes <- row.names(marker_list)
+marker_list %>%
+    arrange(desc((avg_log2FC))) %>%
+    dplyr::select(avg_log2FC) -> fold_change
+gene_list <- fold_change$avg_log2FC
+names(gene_list) <- row.names(fold_change)
+h50 <- read.gmt(paste0(here("03_processing/14_phase_7/data/gene_sets/h.all.v2024.1.Hs.symbols.gmt")))
+gene <- names(gene_list)[abs(gene_list) > 2] 
+
+em <- enricher(gene, TERM2GENE = h50)
+barplot(em)
+dotplot(em, showCategory=30) + ggtitle("enrichment results when comparing High-mt versus low-mt")
+ggsave(paste0(output_figs,"feature_analysis/dotplot_enrichment_h50.png"))
+
+for (ontology in c("CC","BP","MF")){
+    enriched_go <- enrichGO(gene = gene,
+                OrgDb    = org.Hs.eg.db,
+                keyType = "SYMBOL",
+                ont      = ontology,
+                readable = TRUE) 
+    
+    graph_plot <- cnetplot(enriched_go, showCategory=5,
+                categorySize="pvalue",
+                foldChange=gene_list,
+                order=TRUE)
+    ggsave(plot = graph_plot, filename = paste0(output_figs,"feature_analysis/cnetplot_enrichment_GO_",ontology,"_HvL.png"))
+
+    dots <- dotplot(enriched_go, showCategory=30) + ggtitle("GO enrichment cellular component high vslow")
+    ggsave(plot = dots, filename = paste0(output_figs,"feature_analysis/dotplot_enrichment_GO_",ontology,"_HvL.png"))
+
+}
+
+enriched_go <- enrichGO(gene = gene,
+            OrgDb    = org.Hs.eg.db,
+            keyType = "SYMBOL",
+            ont      = "ALL",
+            readable = TRUE) 
+
+graph_plot <- cnetplot(enriched_go, showCategory=5,
+            categorySize="pvalue",
+            foldChange=gene_list,
+            order=TRUE) + ggtitle("ALL high versus low")
+ggsave(plot = graph_plot, filename = paste0(output_figs,"feature_analysis/cnetplot_enrichment_GO_ALL_HvL.png"))
+
+dots <- dotplot(enriched_go, showCategory=30) + ggtitle("GO enrichment ALL high vslow")
+ggsave(plot = dots, filename = paste0(output_figs,"feature_analysis/dotplot_enrichment_GO_ALL_HvL.png"))
+
+
+ego3_CC <- gseGO(geneList     = gene_list,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "CC",
+              keyType      = "SYMBOL",
+              minGSSize    = 3,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = TRUE)
+
+dotplot(ego3_CC, showCategory = 20)
+?gseGO
+ego3_BP <- gseGO(geneList     = gene_list,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "BP",
+              keyType      = "SYMBOL",
+              minGSSize    = 3,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = TRUE)
+
+dotplot(ego3_BP, showCategory = 20)
+
+ego3_MF <- gseGO(geneList     = gene_list,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "MF",
+              keyType      = "SYMBOL",
+              minGSSize    = 3,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = TRUE)
+
+dotplot(ego3_MF, showCategory = 20)
+
+
+ego3_ALL <- gseGO(geneList     = gene_list,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "ALL",
+              keyType      = "SYMBOL",
+              minGSSize    = 50,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = TRUE, eps = 0)
+
+
+dotplot(ego3_ALL, showCategory = 20) + ggtitle("High vs low gene set enrichment (ALL)")
+ggsave(paste0(output_figs,"feature_analysis/GO_enrichment_all_highvlow.png"))
+cnetplot(ego3_ALL, showCategory=5,
+            categorySize="pvalue",
+            foldChange=gene_list,
+            order=TRUE) + ggtitle("ALL high versus low gseGO")
+ggsave(paste0(output_figs,"feature_analysis/graph_plot_GO_enrichment_all_highvlow.png"))
+
+```
+
+
+
+```{R}
+marker_list <- FindMarkers(
+    object = seurat_obj,
+    ident.1 = "Melanoma_high_cells", ident.2 = "Other_high_cells",
+    only.pos = F,
+    min.pct = 0,
+    logfc.threshold = 0
+)
+marker_list$genes <- row.names(marker_list)
+marker_list %>%
+    arrange(desc((avg_log2FC))) %>%
+    dplyr::select(avg_log2FC) -> fold_change
+gene_list <- fold_change$avg_log2FC
+names(gene_list) <- row.names(fold_change)
+
+
+gse <- gseGO(
+    geneList = df,
+    ont = "ALL",
+    keyType = "SYMBOL",
+    minGSSize = 3,
+    maxGSSize = 800,
+    pvalueCutoff = 0.05,
+    verbose = TRUE,
+    pAdjustMethod = "none",
+    OrgDb = org.Hs.eg.db, eps = 0
+)
+
+# require(DOSE)
+clusterProfiler::dotplot(gse, showCategory = 10, split = ".sign") + facet_grid(. ~ .sign)
+library(enrichplot)
+gse_sim <- pairwise_termsim(gse)
+emapplot(gse_sim, showCategory = 10)
+gseaplot(gse, by = "all", title = gse$Description[1], geneSetID = 1)
+ridgeplot(gse) + labs(x = "enrichment distribution")
+terms <- gse$Description[1:3]
+pmcplot(terms, 2010:2024, proportion = FALSE)
+# FGSEA
+# have to use certain Databases for reference gene sets
+# MsigDB
+
+## Check
+# https://www.gsea-msigdb.org/gsea/msigdb/human/collections.jsp
+
+
+## KEGGpathways
+ids <- bitr(names(gene_list), fromType = "SYMBOL", toType = "ENTREZID", OrgDb = organism)
+dedup_ids <- ids[!duplicated(ids[c("SYMBOL")]), ]
+fold_change$X <- row.names(fold_change)
+df2 <- fold_change[fold_change$X %in% dedup_ids$SYMBOL, ]
+df2$Y <- dedup_ids$ENTREZID
+kegg_gene_list <- df2$avg_log2FC
+names(kegg_gene_list) <- df2$Y
+kegg_gene_list <- na.omit(kegg_gene_list)
+kegg_gene_list <- sort(kegg_gene_list, decreasing = TRUE)
+kegg_organism <- "hsa"
+kk2 <- gseKEGG(
+    geneList = kegg_gene_list,
+    organism = kegg_organism,
+    minGSSize = 3,
+    maxGSSize = 800,
+    pvalueCutoff = 0.05,
+    pAdjustMethod = "none",
+    keyType = "ncbi-geneid"
+)
+
+dotplot(kk2, showCategory = 10, title = "Enriched Pathways", split = ".sign") + facet_grid(. ~ .sign)
+
+kk2_sim <- pairwise_termsim(kk2)
+emapplot(kk2_sim, showCategory = 10)
+
+cnetplot(kk2, categorySize = "geneNum", foldChange = gene_list)
+gseaplot(kk2, by = "all", title = kk2$Description[1], geneSetID = 1)
+```

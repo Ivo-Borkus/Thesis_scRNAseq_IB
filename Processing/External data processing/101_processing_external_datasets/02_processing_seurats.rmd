@@ -1,0 +1,141 @@
+---
+title: "Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 1
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+# Loading packages
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(ggrepel)
+# library(paletteer)
+library(gridExtra)
+# remotes::install_github("iaaaka/Rscrublet")
+# install.packages("harmony")
+library(rscrublet)
+library(harmony) # install using mamba, R is now downgraded
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+# here::i_am("02_scripts/QC_sequencing.rmd")
+
+source("02_scripts/101_processing_external_datasets/qc_functions.R")
+```
+
+# Loading data
+```{R}
+seurat_biermann <- readRDS("03_processing/100_external_datasets/data/seurat_biermann_initial_meta.rds")
+seurat_gonzalez <- readRDS("03_processing/100_external_datasets/data/seurat_gonzalez_initial_meta.rds")
+seurat_lee <- readRDS("03_processing/100_external_datasets/data/seurat_lee_initial_meta.rds")
+```
+
+
+```{R}
+output_figs <- "03_processing/101_processing_exernal/figs/batch_job_2/"
+list_of_seurats <- list(
+    Biermann = scrublet(seurat_biermann),
+    Gonzalez = scrublet(seurat_gonzalez),
+    Lee = scrublet(seurat_lee)
+)
+```
+
+```{R}
+list_of_seurats[["Lee"]]@meta.data %>% colnames()
+list_of_seurats[["Lee"]][["RNA"]] <- split(list_of_seurats[["Lee"]][["RNA"]], f = list_of_seurats[["Lee"]]$Sample)
+sample_list <- list(
+    Biermann = "ID",
+    Gonzalez = "sample_names",
+    Lee = "Sample"
+)
+
+
+cell_anno_list <- list(
+    Biermann_main = "cell_type_main",
+    Biermann_fine = "cell_type_fine",
+    Biermann_int = "cell_type_int",
+    Biermann_immune = "ct_immune",
+    Biermann_cycling = "cell_cycle",
+    Gonzalez_type = "Cell_Type",
+    Lee_type = "Cell_type",
+    Lee_refined = "Cell_type.refined",
+    Lee_subtype = "Cell_subtype"
+)
+processed_seurat <- lapply(names(list_of_seurats), function(seurat) {
+    name <- seurat
+    reduction_name <- name
+    seurat_obj <- list_of_seurats[[name]]
+    sample_col <- sample_list[[name]]
+    print(sample_col)
+
+    # violin_preNorm <- VlnPlot(seurat_obj, features = "GAPDH") + NoLegend()
+    seurat_obj <- NormalizeData(
+        object = seurat_obj,
+        normalization.method = "LogNormalize",
+        scale.facor = 10000
+    )
+    # violin_postNorm <- VlnPlot(seurat_obj, features = "GAPDH") + NoLegend()
+    seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = "vst", nfeatures = 2000, verbose = TRUE)
+    hvf_info <- HVFInfo(seurat_obj)
+    top_variable_genes <- hvf_info[order(hvf_info$variance.standardized, decreasing = TRUE), ]
+    top_2000_genes <- rownames(top_variable_genes)[1:2000]
+    VariableFeatures(seurat_obj) <- top_2000_genes
+    all.genes <- rownames(seurat_obj)
+    seurat_obj <- ScaleData(object = seurat_obj, features = all.genes, verbose = FALSE)
+    seurat_obj <- RunPCA(
+        object = seurat_obj, nfeatures.print = 5, ndims.print = 1:2, reduction.name = paste0("pca_", reduction_name)
+    )
+
+    elb <- ElbowPlot(seurat_obj, reduction = paste0("pca_", reduction_name), ndims = 50)
+    ggsave(filename = paste0(output_figs, name, "_vizdim.png"), plot = VizDimLoadings(seurat_obj, dims = 1:5, reduction = paste0("pca_", reduction_name), nfeatures = 15))
+    ggsave(filename = paste0(output_figs, name, "_elb.png"), elb)
+    seurat_obj
+    saveRDS(seurat_obj, paste0("03_processing/101_processing_exernal/data/batch_job_2/",name,"_pre_int.rds"))
+    seurat_obj <- IntegrateLayers(
+        object = seurat_obj, method = HarmonyIntegration,
+        orig.reduction = paste0("pca_", reduction_name), new.reduction = paste0("harmony_pca.", reduction_name),
+        verbose = TRUE
+    )
+    res_values <- c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.5)
+    seurat_obj <- FindNeighbors(seurat_obj, reduction = paste0("harmony_pca.", reduction_name), dims = 1:25)
+    seurat_obj <- FindClusters(seurat_obj, resolution = res_values, algorithm = 4)
+    seurat_obj <- RunUMAP(seurat_obj, reduction = paste0("harmony_pca.", reduction_name), dims = 1:25, reduction.name = paste0("umap.harmony.", reduction_name))
+    # print(violin_preNorm + violin_postNorm)
+})
+
+saveRDS(processed_seurat, "03_processing/101_processing_exernal/data/batch_job_2/processed_seurat_batch_job.rds")
+
+
+
+# seurat_obj <- list_of_seurats[["Lee"]]
+# VlnPlot(seurat_obj, features = "GAPDH") + NoLegend()
+```
+
+
+```{R}
+
+sessionInfo()
+```
+
+
+```{R rmd, eval = F}
+rmarkdown::render(
+    input = paste0("02_scripts/101_processing_external_datasets/02_processing_seurats.rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits",
+    output_file = paste0("02_processing_seurats.html")
+)
+```

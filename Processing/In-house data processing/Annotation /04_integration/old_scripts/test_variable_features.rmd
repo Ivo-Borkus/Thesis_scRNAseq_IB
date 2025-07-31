@@ -1,0 +1,227 @@
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+```
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+library(DoubletFinder)
+library(clustree)
+library(knitr)
+library(rscrublet)
+library(Matrix)
+library(patchwork)
+library(harmony)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+```
+
+```{R Loading in meta data, echo = FALSE, message = FALSE}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+```
+
+
+
+```{R setting directories}
+output_figs <- paste0(here(), "/03_processing/10_integration/figs/comparing_objects/")
+```
+
+
+```{R functions}
+merge_list_seurat_join <- function(seurat_list) {
+    meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+    sample_ids <- meta_data$sample_fullname
+    seurat_obj_list <- map(sample_ids, function(id) {
+        index <- match(id, sample_ids)
+        seurat_obj <- seurat_list[[index]]
+        seurat_obj$sample <- id
+        seurat_obj
+    })
+    names(seurat_obj_list) <- sample_ids
+    seurat_obj <- merge(seurat_obj_list[[1]],
+        y = seurat_obj_list[2:length(seurat_obj_list)],
+        add.cell.ids = sample_ids
+    )
+    seurat_obj <- JoinLayers(seurat_obj)
+    return(seurat_obj)
+}
+
+merge_list_seurat_not_join <- function(seurat_list) {
+    meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+    sample_ids <- meta_data$sample_fullname
+    seurat_obj_list <- map(sample_ids, function(id) {
+        index <- match(id, sample_ids)
+        seurat_obj <- seurat_list[[index]]
+        seurat_obj$sample <- id
+        seurat_obj
+    })
+    names(seurat_obj_list) <- sample_ids
+    seurat_obj <- merge(seurat_obj_list[[1]],
+        y = seurat_obj_list[2:length(seurat_obj_list)],
+        add.cell.ids = sample_ids
+    )
+    return(seurat_obj)
+}
+umap_sample <- function(seurat_obj, reduction_name, title_name) {
+    umap_by_sample <- DimPlot(
+        object = seurat_obj,
+        reduction = reduction_name,
+        group.by = "sample",
+        pt.size = 0.1,
+        label = F, cols = nejm_colors
+    ) & theme(plot.title = element_text(size = 10)) &
+        NoAxes() & labs(title = title_name)
+}
+umap_feature_vec <- c(
+    "PTPRC", # Immune
+    "TOP2A", "MKI67", # Proliferative
+    ## Lymphoid
+    "CD3D", "CD3E", # T cells
+    "CD4", "CD8A", "CD8B", # distinction between 4 and 8
+    "FOXP3", "IL2RA", # T regs
+    "TOX2", # Tfh cell
+    "NCAM1", "KLRF1", # NK cells
+    "MS4A1", "CD79A", # B cells
+    # "TCL1A", # Naive B cells
+    # "BANK1", "BLK", # Memory/ activated B cells
+    "SDC1", "PRDM1", # Plasma cells
+    ## Myeloid
+    "S100A8", "CD14", # Monocytes
+    "CD163", "CD68", # Macrophage markers
+    "P2RY12", "SLC2A5", # microglia
+    "IL3RA", # pDCs
+    "CD1C", # DCs
+    "MAG", "MLANA" # other cells
+)
+```
+
+```{R original list of seperate objects}
+subset_list_immune <- lapply(list.files("03_processing/09_subset_annotation/specific_data", full.names = TRUE)[1:8], function(file) {
+    sample <- sub("\\..*", "", basename(file))
+    seurat_obj <- readRDS(file)
+})
+```
+
+```{R Not joined}
+seurat_obj_not_join <- merge_list_seurat_not_join(subset_list_immune)
+reduction_name <- "merged_subset_immune_not_join"
+
+seurat_obj_not_join <- NormalizeData(seurat_obj_not_join)
+seurat_obj_not_join <- FindVariableFeatures(seurat_obj_not_join, selection.method = "vst", nfeatures = 2000, verbose = TRUE)
+hvf_info <- HVFInfo(seurat_obj_not_join)
+top_variable_genes <- hvf_info[order(hvf_info$variance.standardized, decreasing = TRUE), ]
+top_2000_genes <- rownames(top_variable_genes)[1:2000]
+VariableFeatures(seurat_obj_not_join) <- top_2000_genes
+all.genes <- rownames(seurat_obj_not_join)
+seurat_obj_not_join <- ScaleData(object = seurat_obj_not_join, features = all.genes, verbose = TRUE)
+seurat_obj_not_join <- RunPCA(
+    object = seurat_obj_not_join, nfeatures.print = 5, ndims.print = 1:2, reduction.name = paste0("pca_", reduction_name)
+)
+
+
+variable_features_PCA <- row.names(seurat_obj_not_join@reductions[[paste0("pca_", reduction_name)]]@feature.loadings)
+print(length(top_2000_genes[top_2000_genes %in% variable_features_PCA]))
+length(variable_features_PCA)
+print(length(VariableFeatures(seurat_obj_not_join)[VariableFeatures(seurat_obj_not_join) %in% variable_features_PCA]))
+
+seurat_obj_not_join <- FindNeighbors(seurat_obj_not_join, dims = 1:10, reduction = paste0("pca_", reduction_name))
+res_values <- c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.5)
+seurat_obj_not_join <- FindClusters(seurat_obj_not_join, resolution = res_values, algorithm = 4)
+seurat_obj_not_join <- RunUMAP(seurat_obj_not_join, dims = 1:10, reduction = paste0("pca_", reduction_name), reduction.name = paste0("umap.", reduction_name), verbose = TRUE)
+```
+
+```{R checking if features are all scaled}
+summary(hvf_info[row.names(hvf_info) %in% variable_features_PCA, ])
+summary(hvf_info[row.names(hvf_info) %in% top_2000_genes, ])
+dim(hvf_info[row.names(hvf_info) %in% variable_features_PCA, ])
+scaled_data <- head(seurat_obj_not_join[["RNA"]]) # Adjust the layer name if different
+length(row.names(seurat_obj_not_join[["RNA"]]$scale.data[seurat_obj_not_join[["RNA"]]$scale.data > 0, ]) %in% top_2000_genes)
+scaled_data <- seurat_obj_not_join[["RNA"]]$scale.data
+
+scaled_subset <- scaled_data[top_2000_genes, , drop = FALSE]
+positive_genes <- rownames(scaled_subset)[apply(scaled_subset, 1, function(x) any(x > 0))]
+
+length(positive_genes)
+```
+
+```{R}
+Variable_genes_plot <- LabelPoints(
+    plot = VariableFeaturePlot(seurat_obj_not_join),
+    points = head(VariableFeatures(seurat_obj_not_join), 10),
+    repel = TRUE
+)
+grid.arrange(VariableFeaturePlot(seurat_obj_not_join) & NoLegend(), Variable_genes_plot & NoLegend(),
+    ncol = 2, nrow = 1
+)
+```
+```{R overlap variable features}
+features_not_join <- VariableFeatures(object = seurat_obj_not_join)
+features_not_join[1:15]
+variable_features_checked <- head(row.names(seurat_obj_not_join@reductions[[paste0("pca_", reduction_name)]]@feature.loadings), 2000)
+
+
+length(features_not_join[features_not_join %in% variable_features_checked])
+features_not_join %in% variable_features_checked
+
+
+length(features_not_join[na.omit(seurat_obj_not_join@assays$RNA@meta.data$var.features) %in% features_not_join])
+
+object_features <- na.omit(seurat_obj_not_join@assays$RNA@meta.data$var.features)
+
+Variable_genes_plot <- LabelPoints(
+    plot = VariableFeaturePlot(seurat_obj_not_join),
+    points = head(object_features, 10),
+    repel = TRUE
+)
+grid.arrange(VariableFeaturePlot(seurat_obj_not_join) & NoLegend(), Variable_genes_plot & NoLegend(),
+    ncol = 2, nrow = 1
+)
+str(seurat_obj_not_join)
+hvf_info <- HVFInfo(seurat_obj_not_join)
+head(hvf_info)
+top_variable_genes <- hvf_info[order(hvf_info$variance.standardized, decreasing = TRUE), ]
+top_n_genes <- rownames(top_variable_genes)[1:2000] # Extract top 100 genes
+head(top_variable_genes)
+Variable_genes_plot <- LabelPoints(
+    plot = VariableFeaturePlot(seurat_obj_not_join),
+    points = head(top_n_genes, 10),
+    repel = TRUE
+)
+grid.arrange(VariableFeaturePlot(seurat_obj_not_join) & NoLegend(), Variable_genes_plot & NoLegend(),
+    ncol = 2, nrow = 1
+)
+length(features_not_join[features_not_join %in% top_n_genes])
+```
+
+
+
+```{R}
+Version(seurat_obj_not_join)
+
+sessionInfo()
+```

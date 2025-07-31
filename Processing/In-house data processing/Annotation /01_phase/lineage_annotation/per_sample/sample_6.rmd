@@ -1,0 +1,348 @@
+
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+params:
+    sample: "105946-002-003"
+    fullname: "Mel_BrM23-17"
+    minUMI: 500
+    maxUMI: NA
+    minfeat: 300
+    maxfeat: 10000
+    maxmt: 20
+    res: "0.01"
+    load: FALSE
+    new: FALSE
+title: "`r paste0('Analysis of singlecellRNAseq sample ',params$fullname, ' with ID: ', params$sample)`"
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+sample <- params$sample
+minUMI <- params$minUMI
+maxUMI <- params$maxUMI
+minfeat <- params$minfeat
+maxfeat <- params$maxfeat
+maxmt <- params$maxmt
+res <- params$res
+load <- params$load
+new <- params$new
+set.seed(91774)
+```
+
+
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+library(DoubletFinder)
+library(clustree)
+library(knitr)
+library(rscrublet)
+library(Matrix)
+library(patchwork)
+
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/QC_per_sample/sample_1.rmd")
+```
+
+# Parameters
+
+```{R parameter table, echo = FALSE}
+# params <- rmarkdown::yaml_front_matter("02_scripts/lineage_annotation/per_sample/sample_6.rmd")$params
+params_table <- data.frame(
+    Parameter = c("Sample", "Tumour primary", "Minimum UMI count", "Maximum UMI count", "Minimum genes count", "Maximum gene count", "Maximum mitochondrial %", "Resolution used", "Loading seurat objects"),
+    Value = c(params$sample, params$fullname, params$minUMI, params$maxUMI, params$minfeat, params$maxfeat, params$maxmt, params$res, params$load)
+)
+kable(params_table, caption = "Report Parameters")
+```
+
+```{R Loading data, echo = FALSE, message = FALSE}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+index <- match(sample, meta_data$sample_name)
+data_dir <- here("01_data", meta_data$sample_fullname[index], sample, "outs/per_sample_outs", sample, "count/sample_filtered_feature_bc_matrix")
+count_data <- Read10X(data.dir = data_dir)
+seurat_obj <- CreateSeuratObject(count_data)
+seurat_obj[["percent_mt"]] <- PercentageFeatureSet(seurat_obj, pattern = "^MT-")
+```
+
+```{R functions, echo = FALSE}
+excel_sheet <- function(markers, name) {
+    library(writexl)
+    output_dir <- paste0(here(), "/", "03_processing/07_Subclustering/data/subsets/lineage/markers/")
+    print(paste0("Output will be put in: ", output_dir, name, ".xlsx"))
+    if (file.exists(output_dir)) {
+        markers %>%
+            arrange(cluster, desc(avg_log2FC)) %>% # Arrange within each cluster
+            group_by(cluster) %>%
+            select(cluster, pct.1, pct.2, p_val, p_val_adj, avg_log2FC, gene) %>%
+            group_split() %>% # Split into list by 'cluster'
+            setNames(unique(markers$cluster)) %>% # Name list elements
+            writexl::write_xlsx(paste0(output_dir, name, ".xlsx"))
+    } else {
+        stop("Directory does not exist")
+    }
+}
+```
+
+
+```{R Running QC, child ="/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/lineage_annotation/childs/QC_child.rmd"}
+```
+
+```{R Running doublet finder, eval = new, child = "02_scripts/lineage_annotation/childs/doublet_finder.rmd"}
+```
+
+```{R, eval = load, echo = FALSE}
+seurat_obj <- readRDS(file = paste0("03_processing/01_QC/data/subsets/Doublet_finder/", sample, ".rds"))
+# seurat_obj_lung <- readRDS(file = paste0("03_processing/01_QC/data/subsets/Doublet_finder/105086-009-009.rds"))
+```
+
+# Identifying lineages
+
+
+```{R setting the resolution, echo = FALSE, include = TRUE}
+# sample 1 = 0.1
+# res <- "0.05"
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+umap_resolution_combined <- DimPlot(
+    object = seurat_obj,
+    reduction = "umap.unintegrated",
+    group.by = paste0("RNA_snn_res.", res),
+    pt.size = 0.1,
+    label = TRUE
+) & NoLegend() &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+umap_resolution_combined
+```
+
+
+```{R showing QC of each cluster, echo = FALSE, eval = TRUE}
+violin_QC_annotated <- VlnPlot(seurat_obj, features = c("nCount_RNA", "nFeature_RNA", "percent_mt", "doublet.score"), ncol = 2) &
+    theme(plot.title = element_text(size = 10))
+
+
+cluster_counts <- table(Idents(seurat_obj))
+cluster_df <- as.data.frame(cluster_counts)
+colnames(cluster_df) <- c("Cluster", "Cell_Count")
+
+counts_annotated <- ggplot(cluster_df, aes(x = Cluster, y = Cell_Count, fill = Cluster)) +
+    geom_bar(stat = "identity") +
+    theme_minimal() +
+    labs(
+        title = paste("Number of Cells per Cluster - Resolution", 0.01),
+        x = "Cluster", y = "Number of Cells"
+    ) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+violin_QC_annotated
+counts_annotated
+```
+
+
+```{R marker lists, echo = FALSE, include = FALSE}
+# Gene list from Paula:
+immune_genes <- c(
+    "PTPRC", # CD45
+    "S100A8", "CD14", # mono
+    "C1QC", "CD68", # macro
+    "CD4", "CD8B", "CD3E", # T cells
+    "COL1A1", # CAFs
+    "CD1C", # cDC
+    # "MKI67", # prolif
+    "KLRB1", # NK
+    "MS4A1", "CD79B", # B cells
+    "LILRA4" # pDC
+)
+
+Myeloid_genes <- c(
+    "S100A8", "CD14", # mono
+    "C1QC", "CD68", # macro
+    "CD1C" # cDC
+)
+
+Lymphoid_genes <- c(
+    "KLRB1", # NK
+    "MS4A1", "CD79B", # B cells
+    "CD4", "CD8B", "CD3E" # T cells
+)
+
+# Gene list from Paula:
+cell_cycle_genes <- read.csv(file = "03_processing/07_Subclustering/data/subsets/lineage/Carmona_STACAS_cellCycle.symbol.DE.specific.170120.csv")
+cell_cycle_genes <- toupper(cell_cycle_genes[, 2])
+print(cell_cycle_genes)
+
+# Self made gene list:
+brain_tissue <- c(
+    "NDRG2", "GFAP", # Astrocytes
+    "MAG", "MOG", "PLP1", # Oligodendrocytes
+    "RBFOX3", "NEFL" # neuronal marker
+)
+```
+
+```{R adding scores, echo = FALSE }
+seurat_obj <- AddModuleScore(
+    object = seurat_obj,
+    features = list(immune_genes),
+    ctrl = 5,
+    name = "immuneCells"
+)
+seurat_obj <- AddModuleScore(
+    object = seurat_obj,
+    features = list(cell_cycle_genes),
+    ctrl = 5,
+    name = "cellCycle"
+)
+seurat_obj <- AddModuleScore(
+    object = seurat_obj,
+    features = list(brain_tissue),
+    ctrl = 5,
+    name = "neuronalMarkers"
+)
+
+seurat_obj <- AddModuleScore(
+    object = seurat_obj,
+    features = list(Myeloid_genes),
+    ctrl = 5,
+    name = "Myeloid_genes"
+)
+
+seurat_obj <- AddModuleScore(
+    object = seurat_obj,
+    features = list(Lymphoid_genes),
+    ctrl = 5,
+    name = "Lymphoid_genes"
+)
+```
+## General cell populations
+
+```{R violins of each cluster, echo = FALSE}
+violins_general <- VlnPlot(seurat_obj, features = c("PTPRC", "cellCycle1", "neuronalMarkers1", "MLANA"), ncol = 2) &
+    theme(plot.title = element_text(size = 10))
+
+violins_general
+```
+
+## immune sublineages
+
+```{R violins of lineages, echo = FALSE}
+violins_lineage_annotated <- VlnPlot(seurat_obj, features = c("PTPRC", "Myeloid_genes1", "Lymphoid_genes1"), ncol = 2) &
+    theme(plot.title = element_text(size = 10))
+violins_lineage_annotated
+```
+
+
+```{R violins of cell lines, echo = FALSE, include = FALSE}
+violins_dendritic <- VlnPlot(seurat_obj, features = c("CD1C", "LILRA4")) + plot_annotation("Violin plots of cDCs and pDCs", theme = theme(plot.title = element_text(hjust = 0.5, size = 15, face = "italic")))
+
+violins_bcell <- VlnPlot(seurat_obj, features = c("MS4A1", "CD79B")) + plot_annotation("Violin plots of B cells", theme = theme(plot.title = element_text(hjust = 0.5, size = 15, face = "italic")))
+violins_tcell <- VlnPlot(seurat_obj, features = c("CD4", "CD8B", "CD3E"), ncol = 2) + plot_annotation("Violin plots of T cells", theme = theme(plot.title = element_text(hjust = 0.5, size = 15, face = "italic")))
+violins_nk <- VlnPlot(seurat_obj, features = c("KLRB1")) + plot_annotation("Violin plots of Natural killer cells", theme = theme(plot.title = element_text(hjust = 0.5, size = 15, face = "italic")))
+violins_mono_macro <- VlnPlot(seurat_obj, features = c("S100A8", "CD14", "C1QC", "CD68"), ncol = 2) + plot_annotation("Violin plots of macrophages and monocytes", theme = theme(plot.title = element_text(hjust = 0.5, size = 15, face = "italic")))
+```
+
+## individual cell lines
+```{R individual cell lines, echo = FALSE}
+violins_dendritic
+violins_bcell
+violins_tcell
+violins_nk
+violins_mono_macro
+``` 
+
+```{R, echo = FALSE, include = FALSE}
+
+```
+
+```{R Feature plots lineage, echo = FALSE}
+FeaturePlot(seurat_obj, features = c("PTPRC", "Myeloid_genes1", "Lymphoid_genes1", "neuronalMarkers1")) & NoAxes()
+
+
+FeaturePlot(seurat_obj, features = c("CD4", "CD8B", "CD3E", "MS4A1", "KLRB1", "S100A8", "CD14", "C1QC", "CD68")) & NoAxes()
+
+ggsave(file = paste0("test_", sample, ".pdf"))
+```
+
+
+
+```{R Annotating_clusters, echo = FALSE}
+# Idents(seurat_obj) <- "subclusters"
+
+new.cluster.ids <- c("Lymphoid", "Myeloid", "Bcells", "Brain", "Tumour")
+names(new.cluster.ids) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids)
+### Plotting the new labels
+umap_resolution_annotated <- DimPlot(
+    object = seurat_obj,
+    reduction = "umap.unintegrated",
+    pt.size = 0.1,
+    label = TRUE
+) & NoLegend() &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+umap_resolution_annotated
+
+
+## Creating marker sheets
+seurat_obj.markers <- FindAllMarkers(
+    object = seurat_obj,
+    only.pos = TRUE, min.pct = 0.25,
+    logfc.threshold = 0.25
+)
+excel_sheet(seurat_obj.markers, paste0("annotated_subclusters_", sample))
+# dot_all_sub_anno <- DotPlot(seurat_obj, features = genes_of_interest) + RotatedAxis()
+
+cluster_counts <- table(Idents(seurat_obj))
+cluster_df <- as.data.frame(cluster_counts)
+colnames(cluster_df) <- c("Cluster", "Cell_Count")
+cluster_df$sample <- sample
+# Lymphoid_fraction == t-cell: 1148
+write.csv(cluster_df, file = paste0(here(), "/", "03_processing/07_Subclustering/data/subsets/lineage/Counts_per_clust/counts_df_", sample, ".csv"))
+lymphoid_fraction <- cluster_df[cluster_df$Cluster == "Lymphoid", 2] / sum(cluster_df$Cell_Count)
+print(paste0(round(lymphoid_fraction * 100, 2), "%"))
+```
+
+```{R saving}
+saveRDS(seurat_obj, file = paste0("03_processing/07_Subclustering/data/subsets/lineage/rds/", sample, "_ann", ".rds"))
+```
+
+```{R, echo = FALSE}
+sessionInfo()
+```
+```{R, echo = FALSE, eval = FALSE}
+rmarkdown::render(
+    input = paste0("02_scripts/lineage_annotation/per_sample/sample_6.rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits/lineage_annotation",
+    params = list(
+        sample = "105946-002-003",
+        fullname = "Mel_BrM23-18-1",
+        minUMI = 500,
+        maxUMI = NA,
+        minfeat = 300,
+        maxfeat = 10000,
+        maxmt = 20,
+        res = "0.01",
+        load = TRUE,
+        new = FALSE
+    ), output_file = paste0("sample_105946-002-003_lineages.html")
+)
+# "rmarkdown::render(input = paste0("02_scripts/lineage_annotation/Single.rmd"),output_format = "html_document",output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits/lineage_annotation",params = list(sample = "105946-002-005",fullname = "Mel",minUMI = 500,maxUMI = NA,minfeat = 300,maxfeat = 10000,maxmt = 20,res = "0.01",load = FALSE,new = TRUE), output_file = paste0("sample_105946-002-005_lineages.html"))"
+```

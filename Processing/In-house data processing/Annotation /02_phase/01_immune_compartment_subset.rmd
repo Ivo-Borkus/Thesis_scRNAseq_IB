@@ -1,0 +1,97 @@
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+```
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+library(DoubletFinder)
+library(clustree)
+library(knitr)
+library(rscrublet)
+library(Matrix)
+library(patchwork)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+```
+
+```{R Loading meta data, echo = FALSE, message = FALSE}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+```
+
+
+```{R Functions, eval = FALSE}
+
+```
+
+
+```{R subsetting, include = TRUE, eval = T}
+subset_list <- lapply(list.files("03_processing/08_annotation/data", full.names = TRUE)[1:8], function(file) {
+    sample <- sub("\\..*", "", basename(file))
+    seurat_obj <- readRDS(file)
+    if ("Brain" %in% levels(seurat_obj)) {
+        seurat_obj <- subset(x = seurat_obj, idents = c("Tumour", "Brain"), invert = TRUE)
+    } else {
+        seurat_obj <- subset(x = seurat_obj, idents = c("Tumour"), invert = TRUE)
+    }
+})
+lapply(subset_list, function(x) {
+    print(ncol(x))
+})
+```
+
+```{R processing subsets, include = TRUE, eval = T}
+processed_list <- lapply(subset_list, function(seurat_obj) {
+    seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = "vst", nfeatures = 2000, verbose = TRUE)
+    all.genes <- rownames(seurat_obj)
+    seurat_obj <- ScaleData(object = seurat_obj, features = all.genes, verbose = FALSE)
+    seurat_obj <- RunPCA(
+        object = seurat_obj,
+        features = VariableFeatures(object = seurat_obj),
+        nfeatures.print = 5, ndims.print = 1:2,
+        reduction.name = "pca_im"
+    )
+    res_values <- c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.5)
+    seurat_obj <- FindClusters(seurat_obj, resolution = res_values, algorithm = 4)
+    seurat_obj <- RunUMAP(seurat_obj, dims = 1:10, reduction = "pca_im", reduction.name = "umap.unintegrated_im", verbose = FALSE)
+})
+
+saveRDS(processed_list, file = "03_processing/09_subset_annotation/data/processed_list.rds")
+```
+
+
+
+```{R eval = FALSE}
+rmarkdown::render(
+    input = paste0("02_scripts/02_phase/01_immune_compartment_subset.rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits",
+    output_file = paste0("knits/01_immune_compartment_subset.html")
+)
+```
+

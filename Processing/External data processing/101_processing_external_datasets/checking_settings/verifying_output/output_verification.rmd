@@ -1,0 +1,81 @@
+---
+title: "Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+params:
+    dataset_name: "Lee"
+    cell_type: "T_cells"
+
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, fig.width = 20, fig.height = 20)
+```
+
+
+# Loading libraries and setting directories
+```{R loading libraries, include = F, echo = T}
+library(Seurat)
+
+# plotting and data science packages
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+
+# co-expression network analysis packages:
+library(WGCNA)
+library(hdWGCNA)
+library(knitr)
+# using the cowplot theme for ggplot
+theme_set(theme_cowplot())
+
+# set random seed for reproducibility
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+source("02_scripts/101_processing_external_datasets/qc_functions.R")
+set.seed(1123)
+# optionally enable multithreading
+enableWGCNAThreads(nThreads = 8)
+```
+
+
+
+```{R get modules of interest}
+
+```
+
+```{R investigate their correlation with general factors}
+# list of traits to correlate
+cur_traits <- c("braaksc", "pmi", "msex", "age_death", "doublet_scores", "nCount_RNA", "nFeature_RNA", "total_counts_mt")
+
+seurat_obj <- ModuleTraitCorrelation(
+    seurat_obj,
+    traits = cur_traits,
+    group.by = "generalised_ann_1"
+)
+```
+
+```{R}
+seurat_obj@meta.data$primary %>% unique()
+
+group1 <- seurat_obj@meta.data %>%
+    subset(generalised_ann_1 == cell_type_of_interest & primary == "Melanoma") %>%
+    rownames()
+group2 <- seurat_obj@meta.data %>%
+    subset(generalised_ann_1 == cell_type_of_interest & primary != "Melanoma") %>%
+    rownames()
+
+DMEs <- FindDMEs(
+    seurat_obj,
+    barcodes1 = group1,
+    barcodes2 = group2,
+    test.use = "wilcox",
+    wgcna_name = reduction_name
+)
+
+head(DMEs)
+```

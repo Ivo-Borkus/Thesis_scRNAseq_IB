@@ -1,0 +1,215 @@
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), fig.width = 15, fig.height = 22, tidy = FALSE) # nolint
+set.seed(91774)
+```
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+library(DoubletFinder)
+library(clustree)
+library(knitr)
+library(rscrublet)
+library(Matrix)
+library(patchwork)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+# here::i_am("02_scripts/03_phase/immune_subset.rmd")
+```
+
+```{R Loading meta data, echo = FALSE, message = FALSE}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+
+nejm_colors <- paletteer::paletteer_d(
+    "ggsci::default_nejm", length(levels(as.factor(meta_data$sample_name)))
+)
+```
+
+```{R gene list, echo = TRUE}
+nsclc_sig <- c("CDK4", "PUM3", "NTS", "EPCAM", "KRT17", "S100A2", "SFN", "PTHLH", "PERP", "SPRR3", "AGR2", "CEACAM6", "FGB", "FGA", "FGG", "PAEP", "TESC", "SOX2", "CXCL1", "LAMC2")
+brm_sig <- c("SFTPB", "SFTPC", "NAPSA", "ENO1", "BRD2", "IFITM3", "MAGED2", "CD81", "MMP14", "SMARCE1", "POSTN", "MAGEA3", "CD44", "MMP2", "SMAD5", "BRAF", "MAGEC2", "SPARC", "CD109", "CCDC167", "BRD7", "BRD8", "MMP17", "BRD4", "SMARCAD1", "KRT5", "KRT19", "KRT8", "KRT18", "CD24", "KRT15", "PTGDS", "CDH2", "CDH13", "SELENOP", "CD47", "ALDH3A2", "ABCD2", "PTPN7")
+cell_cycle_genes <- read.csv(file = "03_processing/07_Subclustering/data/subsets/lineage/Carmona_STACAS_cellCycle.symbol.DE.specific.170120.csv")
+cell_cycle_genes <- toupper(cell_cycle_genes[, 2])
+gene_list <- list(
+    "T-cells" = c("Cd3e", "Cd3d", "Cd4", "Cd8a", "Cd8b1", "Sell", "Lef1", "Gzmk", "Klrb1", "Foxp3", "Cxcr3", "Gata3", "Il17f", "Trdv1"),
+    "Gamma Delta" = c("Cd3e", "Cd3d", "Trdv1", "Trdc", "Trdv3"),
+    "Natural Killers" = c("Ncam1", "Fcgr3", "Cx3cr1", "Klrc2", "Klrd1", "Klrc3", "Klrk1", "Klrc1", "Nkg7"),
+    "B-cells" = c("Cd19", "Ebf1", "Cd79a", "Cd79b", "Cd74", "Ccr7", "Sell", "Itgax", "Jchain", "Igha"),
+    "Plasma" = c("Jchain", "Ighm", "Iglc2"),
+    "Monocytes/Macrophages" = c("Cd68", "Cd14", "S100a8", "S100a9", "Lyz2", "Vcan", "Fcgr3", "Cx3cr1", "H2AB1"),
+    "Dendritic Cells" = c("Clec9a", "Xcr1", "Ido1", "Fcer1a", "Clec10a", "Itgax", "Siglech", "Il3ra", "Jchain"),
+    "Mast Cells" = c("Kit", "Cpa3"),
+    "non small cell lung cancer" = nsclc_sig,
+    "Brain metastasis signature" = brm_sig,
+    "cell_cycle_genes" = cell_cycle_genes,
+    "Proliferative Cells" = c("Mki67", "Top2a", "Stmn1", "Hist1h1b")
+)
+print(gene_list)
+```
+
+```{R Functions}
+adding_scores_2 <- function(seurat_obj, gene_list) {
+    for (index in 1:length(gene_list)) {
+        # print(list(toupper(gene_list[[names(gene_list)[index]]])))
+        # print(paste0(names(gene_list)[index], " sig"))
+        seurat_obj <- AddModuleScore(
+            object = seurat_obj,
+            features = list(toupper(gene_list[[names(gene_list)[index]]])),
+            ctrl = 5,
+            name = paste0(names(gene_list)[index], " sig")
+        )
+    }
+    return(seurat_obj)
+}
+general_umap <- function(seurat_obj, sample, reduction_name) {
+    umap_resolution_annotated <- DimPlot(
+        object = seurat_obj,
+        reduction = paste0("umap.", reduction_name),
+        pt.size = 0.5,
+        label = TRUE
+    ) & NoLegend() &
+        theme(plot.title = element_text(size = 10)) &
+        NoAxes() & labs(title = paste0("Annotated umap of cells in sample: ", sample))
+    return(umap_resolution_annotated)
+}
+```
+
+# Resolution plot
+```{R immune subset rando plots}
+seurat_obj <- readRDS(file = "03_processing/10_integration/data/merged_subset_immune.rds")
+
+
+resolution_columns <- grep("^RNA_snn_res\\.",
+    colnames(seurat_obj@meta.data),
+    value = TRUE
+)
+umap_resolution_combined <- DimPlot(
+    object = seurat_obj,
+    reduction = "umap.merged_subset_immune",
+    group.by = resolution_columns,
+    pt.size = 0.1,
+    label = TRUE
+) & NoLegend() &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+umap_resolution_combined
+```
+
+```{R features specific, echo = FALSE}
+feature_vec <- c(
+    "PTPRC", # Immune
+    ## Lymphoid
+    "CD3D", "CD3E", # T cells
+    "CD4", "CD8B", # distinction between 4 and 8
+    "FOXP3", "IL2RA", # T regs
+    "NCAM1", # NK cells
+    "MS4A1", "CD79A", # B cells
+    "TCL1A", # Naive B cells
+    "BANK1", "BLK", # Memory/ activated B cells
+    "SDC1", "PRDM1", # Plasma cells
+    ## Myeloid
+    "S100A8", "CD14", # Monocytes
+    "CD163", "CD68", # Macrophage markers
+    "C1QC", # Tolerogenic macrophages
+    "P2RY12", "SLC2A5", # microglia
+    "SPP1", # specific subsets
+    "CD177", # Neutrophils
+    "LILRA4", # pDCs
+    "CD1C", "CLEC10A", # DCs
+    "CD34", "KIT", # HSCs
+    "MAG", "MLANA" # other cells
+)
+```
+
+# Dotplots
+
+
+
+```{R feature plots, fig.width = 20, fig.height = 20}
+reduction_name <- "merged_subset_immune"
+res <- "1.5"
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+
+
+print(general_umap(seurat_obj, sample, reduction_name))
+seurat_obj <- adding_scores_2(seurat_obj, gene_list)
+
+
+gene_list_dot <- DotPlot(object = seurat_obj, features = paste0(names(gene_list), " sig1"), cluster.idents = TRUE) + RotatedAxis() + labs(title = "Gene list dotplot of sample immune merged")
+dotplot <- DotPlot(seurat_obj,
+    features = c(
+        "CD3D", "CD3E", "CD4", "CD8A", "CD8B", # T cell
+        "SELL", "CCR7", # Naive
+        "ZNF683", "EOMES", # Effector/memory
+        "GZMK", "CCL5", # Cytotoxic
+        "FOXP3", "IL32", # Tregs
+        "MKI67", # prolif
+        "NCAM1", "KLRC1", # Nk
+        "MS4A1", "CD79A", "CD79B", # B cells
+        "MZB1", "SDC1", "IGHG1", # Plasma cells
+        "CD14", "S100A8", # Moncoytes
+        "P2RY12", "SLC2A5", # microglia
+        "CLEC9A", "CD1C", "AXL", # DC
+        "IL3RA", "LILRA4", # plasmatacoid dendritic cells
+        "COL1A1", "COL1A2", # Fibros
+        "VWF", "CLDN5", "CDH5", "ESAM", # BBB Stromal cells
+        "ISLR", "CTHRC1", # Mesenchymal stromal cells
+        "MAG", "MOG", "MLANA" # Others
+    ),
+    cluster.idents = TRUE
+) + RotatedAxis() + labs(title = paste0(" Dotplot of clusters corresponding to sample: ", "merged subset immune"))
+print(dotplot)
+```
+
+# Violin plots
+```{R violins, echo = FALSE}
+gene_list_vln <- VlnPlot(seurat_obj, features = paste0(names(gene_list), " sig1"), ncol = 3)
+gene_list_vln
+# gene_list_dot
+# ggsave(gene_list_dot, file = "03_processing/10_integration/figs/immune/gene_list_dotplot.pdf", width = 15, height = 10)
+ggsave(gene_list_vln, file = "03_processing/10_integration/figs/immune/gene_list_violin.png", width = 20, height = 20)
+features <- FeaturePlot(seurat_obj,
+    # features = c("PTPRC", "CD4", "CD8A", "CD8B", "CD3D", "CD3E", "MS4A1", "CD79A", "CD79B", "S100A8", "CD14", "C1QC", "CD68", "LILRA4", "IL3RA", "CD1C", "MAG", "MLANA"),
+    features = feature_vec,
+    reduction = paste0("umap.", reduction_name),
+    ncol = 3, order = TRUE
+) & NoAxes()
+print(features)
+```
+
+```{R }
+sessionInfo()
+```
+
+
+```{R eval = F}
+rmarkdown::render(
+    input = paste0("02_scripts/03_phase/02_immune_subset.rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits",
+    output_file = paste0("02_immune_subset.html")
+)
+```

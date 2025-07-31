@@ -1,0 +1,175 @@
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+# install.packages("languageserver")
+```
+
+```{R general functions, eval =T}
+library(here)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+output_figs <- "03_processing/12_phase_5/figs/Tcells/batch_job/"
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+source("02_scripts/04_integration/functions.R")
+```
+
+```{R immune cells}
+tseur <- readRDS( file = "03_processing/12_phase_5/data/Tcell_seurat.rds")
+reduction_name <- "Tcell"
+```
+```{R}
+excel_sheet <- function(markers, output_dir, name) {
+    library(writexl)
+    print(paste0("Output will be put in: ", output_dir, name, ".xlsx"))
+    if (file.exists(output_dir)) {
+        markers %>%
+            arrange(cluster, desc(avg_log2FC)) %>% # Arrange within each cluster
+            group_by(cluster) %>%
+            select(cluster, pct.1, pct.2, p_val, p_val_adj, avg_log2FC, gene) %>%
+            group_split() %>% # Split into list by 'cluster'
+            setNames(unique(markers$cluster)) %>% # Name list elements
+            writexl::write_xlsx(paste0(output_dir, name, ".xlsx"))
+    } else {
+        stop("Directory does not exist")
+    }
+}
+output_excel <- "03_processing/12_phase_5/data/excels/"
+```
+
+```{R markers}
+# set ident
+umap_specific_res <- function(seurat_obj, res) {
+    Idents(object = seurat_obj) <- paste0("RNA_snn_res.",res)
+    umap_res <- DimPlot(
+        object = seurat_obj,
+        reduction = paste0("umap.harmony.", reduction_name),
+        pt.size = 0.1,
+        label = TRUE
+    ) &
+        theme(plot.title = element_text(size = 10)) &
+        NoAxes()
+}
+
+Idents(object = tseur) <- "RNA_snn_res.0.05"
+vln <- VlnPlot(tseur, features = c("percent_mt", "nCount_RNA", "doublet.score", "nFeature_RNA"), ncol = 2, pt.size = 0.1)
+ggsave(vln, file = paste0(output_figs, "Tcells_res0.05_stats_correct.png"))
+tseur.markers <- FindAllMarkers(
+    object = tseur,
+    only.pos = TRUE, min.pct = 0.25,
+    logfc.threshold = 0.25
+)
+excel_sheet(tseur.markers, output_excel, "Tcell_integrated_res.0.05_correct")
+
+Idents(object = tseur) <- "RNA_snn_res.0.9"
+umap_res <- DimPlot(
+    object = tseur,
+    reduction = paste0("umap.harmony.", reduction_name),
+    pt.size = 0.1,
+    label = TRUE
+) &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+ggsave(umap_res, file = paste0(output_figs, "umap_res0.9_unnanotated_correct.png"))
+vln <- VlnPlot(tseur, features = c("percent_mt", "nCount_RNA", "doublet.score", "nFeature_RNA"), ncol = 2, pt.size = 0.1)
+ggsave(vln, file = paste0(output_figs, "Tcells_res0.9_stats_correct.png"))
+
+tseur.markers <- FindAllMarkers(
+    object = tseur,
+    only.pos = TRUE, min.pct = 0.25,
+    logfc.threshold = 0.25
+)
+excel_sheet(tseur.markers, output_excel, "Tcell_integrated_res.0.9_correct")
+```
+
+
+```{R adding cell annotations, echo = TRUE}
+Idents(object = tseur) <- "RNA_snn_res.0.9"# Order is messed up, so the order of sizes does not correspond
+Idents(tseur) <- factor(x = Idents(tseur), levels = as.character(sort(as.numeric(levels(tseur)))))
+Idents(tseur) %>% levels()
+# new.cluster.ids <- c("Exhausted_CD8", "Tcells_CD8", "Bad-Quality", "Unknown", "Unknown", "Proliferative_1", "Tcells_CD4", "Tcells_Naive", "Tregs", "Tregs_2", "NKs")
+new.cluster.ids <- c("Exhausted_CD8", "Proliferating_CD8", "Tcells_CD8", "Unknown", "Unknown", "Proliferative_Tcells", "Tcells_CD4_Naive", "Unknown", "Tregs", "Tcells_CD4", "Tcells_CD4_proliferating","Tregs_2","NK")
+new.cluster.ids_2 <- c("Exhausted_CD8", "Proliferating_CD8", "Tcells_CD8", "Unknown_1", "Unknown_2", "Proliferative_Tcells", "Tcells_CD4_Naive", "Unknown_3", "Tregs", "Tcells_CD4", "Tcells_CD4_proliferating","Tregs_2","NK")
+names(new.cluster.ids_2) <- levels(tseur)
+tseur <- RenameIdents(tseur, new.cluster.ids_2 )
+tseur[["ann_lvl_2_Tcells_specific"]] <- Idents(tseur)
+Idents(object = tseur) <- "RNA_snn_res.0.9"
+names(new.cluster.ids) <- levels(tseur)
+tseur <- RenameIdents(tseur, new.cluster.ids)
+tseur[["ann_lvl_2_Tcells"]] <- Idents(tseur)
+```
+
+```{R}
+tseur@meta.data$primary_sample <- factor(tseur@meta.data$primary_sample, levels = c(
+    primary_sample
+))
+colnames(tseur@meta.data)
+tseur@meta.data %>%
+    count(primary_sample, ann_lvl_2_Tcells_specific) %>%
+    group_by(primary_sample) %>%
+    mutate(composition = n / sum(n)) %>%
+    ggplot(aes(x = primary_sample, y = composition, fill = ann_lvl_2_Tcells_specific)) +
+    geom_bar(position = "stack", stat = "identity") +
+    # scale_fill_manual(values = nejm_colors) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, face = "bold", size = 14, color = "black")) +
+    labs(title = "Composition of Tcells per sample for resolution 0.9 annotated") -> cluster_comp_plot
+ggsave(cluster_comp_plot, file = paste0(output_figs, "cluster_Tcells_annotated_per_sample_specific.png"), width = 10, height = 12)
+tseur@meta.data %>%
+    count(primary_sample, ann_lvl_2_Tcells) %>%
+    group_by(primary_sample) %>%
+    mutate(composition = n / sum(n)) %>%
+    ggplot(aes(x = primary_sample, y = composition, fill = ann_lvl_2_Tcells)) +
+    geom_bar(position = "stack", stat = "identity") +
+    # scale_fill_manual(values = nejm_colors) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, face = "bold", size = 14, color = "black")) +
+    labs(title = "Composition of Tcells per sample for resolution 0.9 annotated") -> cluster_comp_plot
+ggsave(cluster_comp_plot, file = paste0(output_figs, "cluster_Tcells_annotated_per_sample.png"), width = 10, height = 12)
+umap_annotated <- DimPlot(
+    object = tseur,
+    reduction = paste0("umap.harmony.", reduction_name),
+    pt.size = 0.1,
+    label = TRUE
+) & NoLegend() &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes() & labs(title = "Umap of annotated Tcell populations (all patients)")
+ggsave(umap_annotated, file = paste0(output_figs, "annotated_umap_specific.png"))
+
+
+vln <- VlnPlot(tseur, features = c("percent_mt", "nCount_RNA", "doublet.score", "nFeature_RNA"), ncol = 2, pt.size = 0.1)
+ggsave(vln, file = paste0(output_figs, "Violin_basic_stats_annotated_specific.png"), width = 10, height = 15)
+
+dot_markers <- DotPlot(tseur, features = c(
+    "PTPRC","CD8A", "CD8B", "CD4", "LAG3", "CX3CR1","CCR7","SELL" ,"NCAM1","NKG7","KLRB1","FOXP3", "TOP2A", "MKI67", "PDCD1", "HAVCR2", "LYVE1", "TMEM119", "FCGR3A", "LILRA4", "MLANA"
+), cluster.idents = TRUE) + RotatedAxis()
+
+ggsave(dot_markers, file = paste0(output_figs, "Dotplot_tcells_annotated.png"), width = 15, height = 10)
+
+```
+
+```{R saving object,eval = T}
+saveRDS(object = tseur, file ="03_processing/12_phase_5/data/Tcell_seurat_annotated.rds")
+
+```
+
+```{R rmd, eval = F}
+rmarkdown::render(
+    input = paste0("02_scripts/05_ann_lvl2/02_Tcells_annotation.rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits",
+    output_file = paste0("02_Tcells_annotation.html")
+)
+```

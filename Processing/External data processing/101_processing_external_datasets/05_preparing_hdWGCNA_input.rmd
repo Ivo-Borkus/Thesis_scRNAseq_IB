@@ -1,0 +1,368 @@
+---
+title: "Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 1
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+```{R installing packages, eval = FALSE}
+# install BiocManager
+install.packages("BiocManager")
+library(BiocManager)
+# install Bioconductor core packages
+BiocManager::install()
+
+# install devtools
+BiocManager::install("devtools")
+
+# install additional packages
+BiocManager::install(c("WGCNA", "UCell", "GenomicRanges", "GeneOverlap")) # gene overlap produces errors I think
+
+# install latest version of Seurat from CRAN
+install.packages("Seurat")
+
+devtools::install_github("smorabit/hdWGCNA", ref = "dev")
+```
+
+
+```{R loading libraries}
+library(Seurat)
+
+# plotting and data science packages
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+
+# co-expression network analysis packages:
+# library(WGCNA)
+# library(hdWGCNA)
+
+# using the cowplot theme for ggplot
+theme_set(theme_cowplot())
+
+# set random seed for reproducibility
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+source("02_scripts/101_processing_external_datasets/qc_functions.R")
+set.seed(1123)
+# optionally enable multithreading
+# enableWGCNAThreads(nThreads = 8)
+```
+
+
+```{R loading seurat list}
+processed_seurat_list <- readRDS("03_processing/101_processing_exernal/data/immune/processed_seurat_list_immune_2.rds")
+```
+
+
+```{R preparing inputs for later fucntions}
+lee_immune <- processed_seurat_list[[3]]
+biermann_immune <- processed_seurat_list[[1]]
+gonzalez_immune <- processed_seurat_list[[2]]
+
+lee_immune <- JoinLayers(lee_immune)
+biermann_immune <- JoinLayers(biermann_immune)
+gonzalez_immune <- JoinLayers(gonzalez_immune)
+
+
+lee_immune@meta.data$nCount_RNA_log <- log(lee_immune@meta.data$nCount_RNA)
+lee_immune@meta.data$nFeature_RNA_log <- log(lee_immune@meta.data$nFeature_RNA)
+
+biermann_immune@meta.data$nCount_RNA_log <- log(biermann_immune@meta.data$nCount_RNA)
+biermann_immune@meta.data$nFeature_RNA_log <- log(biermann_immune@meta.data$nFeature_RNA)
+
+gonzalez_immune@meta.data$nCount_RNA_log <- log(gonzalez_immune@meta.data$nCount_RNA)
+gonzalez_immune@meta.data$nFeature_RNA_log <- log(gonzalez_immune@meta.data$nFeature_RNA)
+
+biermann_immune@meta.data$percent_mt <- biermann_immune@meta.data$percent.mt
+```
+
+
+```{R}
+cell_anno_list <- list(
+  Biermann = c("cell_type_main", "cell_type_fine", "cell_type_int", "ct_immune", "cell_cycle"),
+  Gonzalez = c("Cell_Type"),
+  Lee = c("Cell_type", "Cell_type.refined", "Cell_subtype")
+)
+```
+
+# defining scope of the annotation for hdWGCNA
+```{R general function}
+dim_lvl_1 <- function(seurat_obj, reduction_name) {
+  DimPlot(
+    object = seurat_obj,
+    reduction = paste0("umap.harmony.", reduction_name),
+    group.by = "generalised_ann_1",
+    pt.size = 0.1,
+    label = TRUE
+  ) &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+}
+dim_lvl_2 <- function(seurat_obj, reduction_name) {
+  DimPlot(
+    object = seurat_obj,
+    reduction = paste0("umap.harmony.", reduction_name),
+    group.by = "generalised_ann_2",
+    pt.size = 0.1,
+    label = TRUE
+  ) &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+}
+```
+
+
+```{R  Lee}
+output_figs <- "03_processing/101_processing_exernal/figs/converging_anno/"
+
+plot_list <- lapply(cell_anno_list[["Lee"]], function(anno) {
+  print(paste0("levels: ", anno))
+  Idents(lee_immune) <- anno
+  lee_immune %>%
+    levels() %>%
+    print()
+  print("#####################")
+})
+
+# Broad cell type smoothing.
+Idents(lee_immune) <- "Cell_type"
+reduction_name <- "Lee_im"
+
+Idents(lee_immune) %>% levels()
+cluster_names_new <- c("Myeloid", "T_cells", "T_cells", "B_cells", "Myeloid")
+names(cluster_names_new) <- levels(lee_immune)
+
+lee_immune <- RenameIdents(lee_immune, cluster_names_new)
+lee_immune[["generalised_ann_1"]] <- Idents(lee_immune)
+dim_lvl_1(lee_immune, reduction_name)
+
+
+# Broad cell type smoothing.
+Idents(lee_immune) <- "Cell_subtype"
+reduction_name <- "Lee_im"
+
+lee_immune[["Cell_subtype"]][is.na(lee_immune[["Cell_subtype"]])] <- "Missing"
+Idents(lee_immune) <- "Cell_subtype"
+
+Idents(lee_immune) %>% levels()
+cluster_names_new <- c(
+  "Myeloid", "Myeloid", "CD4_T",
+  "Others", "CD4_T", "Others", ## Missing/Undetermined
+  "DCs", "B_cells", "B_cells",
+  "CD8_T", "Myeloid", "B_cells", ## MAST as myeloid
+  "Others", "Myeloid", "DCs", ## NK
+  "CD8_T", "Myeloid", "Myeloid",
+  "CD8_T", "CD4_T", "DCs",
+  "Others", "B_cells", "Others", ## Mixed cd4/cd8 (LCs) --> Others
+  "CD4_T", "CD8_T", "DCs",
+  "B_cells", "DCs"
+)
+names(cluster_names_new) <- levels(lee_immune)
+
+lee_immune <- RenameIdents(lee_immune, cluster_names_new)
+lee_immune[["generalised_ann_2"]] <- Idents(lee_immune)
+dim_lvl_2(lee_immune, reduction_name)
+table(Idents(lee_immune))
+```
+
+
+```{R Biermann}
+plot_list <- lapply(cell_anno_list[["Biermann"]], function(anno) {
+  print(paste0("levels: ", anno))
+  Idents(biermann_immune) <- anno
+  biermann_immune %>%
+    levels() %>%
+    print()
+  print("#####################")
+})
+
+# Broad cell type smoothing.
+Idents(biermann_immune) <- "cell_type_main"
+reduction_name <- "Biermann_im"
+Idents(biermann_immune) %>% levels()
+cluster_names_new <- c("B_cells", "Myeloid", "T_cells")
+names(cluster_names_new) <- levels(biermann_immune)
+
+biermann_immune <- RenameIdents(biermann_immune, cluster_names_new)
+Idents(biermann_immune) %>% table()
+biermann_immune[["generalised_ann_1"]] <- Idents(biermann_immune)
+dim_lvl_1(biermann_immune, reduction_name)
+
+
+
+
+Idents(biermann_immune) <- "cell_type_int"
+reduction_name <- "Biermann_im"
+cluster_names_new <- c(
+  "B_cells", "DCs", "Myeloid", "Myeloid", ## Microglia == myeloid
+  "Myeloid", "CD4_T", "CD8_T", "B_cells", ## Tregs == CD4
+  "Others", "CD4_T" ### NK Cells are others
+)
+names(cluster_names_new) <- levels(biermann_immune)
+biermann_immune <- RenameIdents(biermann_immune, cluster_names_new)
+biermann_immune[["generalised_ann_2"]] <- Idents(biermann_immune)
+dim_lvl_2(biermann_immune, reduction_name)
+```
+
+```{R Gonzalez }
+gonzalez_immune$sample_names %>% unique()
+plot_list <- lapply(cell_anno_list[["Gonzalez"]], function(anno) {
+  print(paste0("levels: ", anno))
+  Idents(gonzalez_immune) <- anno
+  gonzalez_immune %>%
+    levels() %>%
+    print()
+  print("#####################")
+})
+# Broad cell type smoothing.
+Idents(gonzalez_immune) <- "Cell_Type"
+
+Idents(gonzalez_immune) %>% levels()
+reduction_name <- "Gonzalez_im"
+# metastasis-associated macrophages == MAM
+cluster_names_new <- c("Myeloid", "Myeloid", "B_cells", "B_cells", "T_cells", "Myeloid", "T_cells", "T_cells", "T_cells", "T_cells")
+names(cluster_names_new) <- levels(gonzalez_immune)
+
+gonzalez_immune <- RenameIdents(gonzalez_immune, cluster_names_new)
+gonzalez_immune[["generalised_ann_1"]] <- Idents(gonzalez_immune)
+Idents(gonzalez_immune) %>% table()
+dim_lvl_1(gonzalez_immune, reduction_name)
+
+
+
+Idents(gonzalez_immune) <- "Cell_Type"
+reduction_name <- "Gonzalez_im"
+cluster_names_new <- c(
+  "Myeloid", "Myeloid", "B_cells",
+  "B_cells", "CD8_T", "DCs",
+  "CD4_T", "CD4_T",
+  "Others", "CD4_T"
+) ## Others == CM mixed (very weird cluster)
+
+names(cluster_names_new) <- levels(gonzalez_immune)
+
+gonzalez_immune <- RenameIdents(gonzalez_immune, cluster_names_new)
+gonzalez_immune[["generalised_ann_2"]] <- Idents(gonzalez_immune)
+Idents(gonzalez_immune) %>% table()
+dim_lvl_2(gonzalez_immune, reduction_name)
+```
+
+
+```{R immune cells own samples, echo = TRUE}
+inhouse_immune <- readRDS(file = "03_processing/12_phase_5/data/seurat_ann_lvl_2_immune.rds")
+reduction_name <- "immune_no_doub"
+inhouse_immune %>% levels()
+```
+
+```{R}
+Idents(inhouse_immune) <- "ann_lvl_2"
+reduction_name <- "immune_no_doub"
+cluster_names_new <- c(
+  "Others", "Others",
+  "T_cells", "T_cells", "T_cells", "T_cells", "T_cells", "T_cells", "T_cells",
+  "T_cells", "T_cells", "T_cells", "T_cells", "T_cells", "T_cells", "T_cells", "T_cells", "T_cells", "T_cells", "T_cells", "T_cells", "T_cells", "T_cells", "T_cells", "T_cells",
+  "Myeloid", "Myeloid", "Myeloid", "Myeloid", "Myeloid", "Myeloid", "Myeloid", "Myeloid", "Myeloid", "Myeloid", "Myeloid",
+  "B_cells", "B_cells"
+)
+
+
+names(cluster_names_new) <- levels(inhouse_immune)
+
+inhouse_immune <- RenameIdents(inhouse_immune, cluster_names_new)
+inhouse_immune[["generalised_ann_1"]] <- Idents(inhouse_immune)
+dim_lvl_1(inhouse_immune, reduction_name)
+
+
+
+
+
+Idents(inhouse_immune) <- "ann_lvl_2"
+reduction_name <- "immune_no_doub"
+cluster_names_new <- c(
+  "Others", "Others",
+  "T_Others", "CD8_T", "T_Others", "CD8_T", "CD4_T", "CD8_T", "CD8_T",
+  "CD8_T", "T_Others", "CD8_T", "T_Others", "CD8_T", "CD8_T", "CD4_T", "CD8_T", "CD4_T", "CD8_T", "CD4_T", "CD8_T", "CD8_T", "Others", "T_Others", "T_Others",
+  "Myeloid", "Myeloid", "Myeloid", "Myeloid", "DCs", "DCs", "Myeloid", "DCs", "Myeloid", "DCs", "DCs",
+  "B_cells", "B_cells"
+)
+
+
+names(cluster_names_new) <- levels(inhouse_immune)
+
+inhouse_immune <- RenameIdents(inhouse_immune, cluster_names_new)
+inhouse_immune[["generalised_ann_2"]] <- Idents(inhouse_immune)
+dim_lvl_2(inhouse_immune, reduction_name)
+```
+
+
+```{R}
+# Verifying marker expression of cells in the clusters:
+
+seurat_list_prepared <- list(
+  Biermann = biermann_immune,
+  Gonzalez = gonzalez_immune,
+  Lee = lee_immune,
+  Inhouse = inhouse_immune
+)
+excel_sheet <- function(markers, output_dir, name) {
+  library(writexl)
+  print(paste0("Output will be put in: ", output_dir, name, ".xlsx"))
+  if (file.exists(output_dir)) {
+    markers %>%
+      arrange(cluster, desc(avg_log2FC)) %>% # Arrange within each cluster
+      group_by(cluster) %>%
+      select(cluster, pct.1, pct.2, p_val, p_val_adj, avg_log2FC, gene) %>%
+      group_split() %>% # Split into list by 'cluster'
+      setNames(unique(markers$cluster)) %>% # Name list elements
+      writexl::write_xlsx(paste0(output_dir, name, ".xlsx"))
+  } else {
+    stop("Directory does not exist")
+  }
+}
+output_figs <- "03_processing/101_processing_exernal/figs/final_anno_combined/batch/"
+output_excel <- "03_processing/101_processing_exernal/data/immune_excel/final_anno/batch/"
+cell_anno <- c("generalised_ann_1", "generalised_ann_2")
+
+for (name in names(seurat_list_prepared)) {
+  seurat_obj <- seurat_list_prepared[[name]]
+  print(name)
+  print("#####################################")
+  for (anno in cell_anno) {
+    Idents(seurat_obj) <- anno
+    print(paste0("levels: ", anno))
+    seurat_obj %>%
+      levels() %>%
+      print()
+    violin_p <- VlnPlot(seurat_obj, features = c("nCount_RNA", "nCount_RNA_log", "nFeature_RNA", "nFeature_RNA_log", "percent_mt"), ncol = 2)
+    ggsave(violin_p, file = paste0(output_figs, "Violin_", name, "_", anno, ".png"), height = 15, width = 15)
+    combined <- DotPlot(seurat_obj, features = c("PTPRC", "CD4", "CD8A", "CD8B", "CD3E", "CD3D", "FOXP3", "IL2RA", "IGHG1", "MS4A1", "CD1C", "CD68", "CD163", "CX3CR1"), cluster.idents = TRUE) + RotatedAxis()
+    ggsave(combined, file = paste0(output_figs, "Dotplot_", name, "_", anno, ".png"), height = 15, width = 15)
+    marker_list <- FindAllMarkers(
+      object = seurat_obj,
+      only.pos = T,
+      min.pct = 0.25,
+      logfc.threshold = 0.25
+    )
+    excel_sheet(marker_list, output_excel, paste0("marker_list_", name, "_", anno))
+  }
+}
+
+saveRDS(seurat_list_prepared, "03_processing/101_processing_exernal/data/processed_seurat_list/seurat_list_prepared.rds")
+```
+
+
+```{R run a rmd, eval = F}
+rmarkdown::render(
+  input = paste0("02_scripts/101_processing_external_datasets/06_hgWGCNA.rmd"),
+  output_format = "html_document",
+  output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits",
+  output_file = paste0("06_hgWGCNA.rmd")
+)
+```

@@ -1,0 +1,138 @@
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+# install.packages("languageserver")
+```
+
+```{R general functions, eval =T}
+library(here)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+output_figs <- "03_processing/11_phase_4/figs/post_harmony/without_doubs/batch_job/"
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+source("02_scripts/04_integration/functions.R")
+```
+
+```{R immune cells}
+no_dub_seur <- readRDS(file = "03_processing/11_phase_4/data/immune_subset_without_doubs.rds")
+reduction_name <- "immune_no_doub"
+```
+
+```{R}
+excel_sheet <- function(markers, output_dir, name) {
+    library(writexl)
+    print(paste0("Output will be put in: ", output_dir, name, ".xlsx"))
+    if (file.exists(output_dir)) {
+        markers %>%
+            arrange(cluster, desc(avg_log2FC)) %>% # Arrange within each cluster
+            group_by(cluster) %>%
+            select(cluster, pct.1, pct.2, p_val, p_val_adj, avg_log2FC, gene) %>%
+            group_split() %>% # Split into list by 'cluster'
+            setNames(unique(markers$cluster)) %>% # Name list elements
+            writexl::write_xlsx(paste0(output_dir, name, ".xlsx"))
+    } else {
+        stop("Directory does not exist")
+    }
+}
+output_excel <- "03_processing/11_phase_4/data/excels/"
+```
+
+```{R annotating redo-clustering}
+Idents(object = no_dub_seur) <- "RNA_snn_res.0.3"
+no_dub_seur.markers <- FindAllMarkers(
+    object = no_dub_seur,
+    only.pos = TRUE, min.pct = 0.25,
+    logfc.threshold = 0.25
+)
+excel_sheet(no_dub_seur.markers, output_excel, "no_dub_seur_res-0.3")
+
+
+umap_res <- DimPlot(
+    object = no_dub_seur,
+    reduction = paste0("umap.harmony.", reduction_name),
+    pt.size = 0.1,
+    label = TRUE
+) &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+
+
+ggsave(umap_res, file = paste0(output_figs, "no_doub_res0.3_unnanotated.png"))
+vln <- VlnPlot(no_dub_seur, features = c("percent_mt", "nCount_RNA", "doublet.score", "nFeature_RNA"), ncol = 2, pt.size = 0.1)
+ggsave(vln, file = paste0(output_figs, "no_doub_res-0.3_Violin_basic_stats_annotated.png"))
+
+
+```
+
+
+```{R annotation}
+Idents(object = no_dub_seur) <- "RNA_snn_res.0.3"
+# new.cluster.ids <- c("Cytotoxic_CD8", "Metabolic_Tcells", "Cytotoxic_CD8", "Macrophages", "Naive_Tcells", "Proliferative_1", "CD4_CD8_mix", "Tregs", "Proliferative_CD8", "Monocytes","Myeloid","DCs", "Proliferating_Tregs","Microglia","Macrophages","Bad_quality","PlasmaCells","B cells","pDCs")
+new.cluster.ids <- c("Monocytes","Tcells_CD8","Tcells","Proliferative_T-1","Tcells_Naive","Tregs","Proliferative_T-2","DCs","Microglia","Bad-quality","PlasmaCells","Bcells","pDCs","DCs")
+
+names(new.cluster.ids) <- levels(no_dub_seur)
+no_dub_seur <- RenameIdents(no_dub_seur, new.cluster.ids)
+no_dub_seur[["ann_lvl_1_filtered"]] <- Idents(no_dub_seur)
+
+no_dub_seur@meta.data %>%
+    count(primary_sample, ann_lvl_1_filtered) %>%
+    group_by(ann_lvl_1_filtered) %>%
+    mutate(composition = n / sum(n)) %>%
+    ggplot(aes(x = ann_lvl_1_filtered, y = composition, fill = primary_sample)) +
+    geom_bar(position = "stack", stat = "identity") +
+    scale_fill_manual(values = nejm_colors) +
+    labs(title = "Composition of clusters per sample for resolution 0.3 post harmony") +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) -> cluster_comp_plot
+
+umap_res <- DimPlot(
+    object = no_dub_seur,
+    reduction = paste0("umap.harmony.", reduction_name),
+    pt.size = 0.1,
+    label = TRUE
+) &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+umap_res    
+DimPlot(
+    object = no_dub_seur,
+    reduction = paste0("umap.harmony.", reduction_name),
+    pt.size = 0.1,
+    group.by = "ann_lvl_1",
+    label = TRUE
+) &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+
+ggsave(umap_res, file = paste0(output_figs, "no_doub_res0.3_annotated.png"))
+
+ggsave(cluster_comp_plot, file = paste0(output_figs, "cluster_comp_sample_post_annotated.png"))
+```
+
+```{R saving object , eval = T}
+saveRDS(object = no_dub_seur, file ="03_processing/11_phase_4/data/immune_subset_without_doubs_annotated.rds")
+```
+```{R, eval = F}
+rmarkdown::render(
+    input = paste0("02_scripts/04_integration/06_redo_annotation.rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits",
+    output_file = paste0("06_redo_annotation.html")
+)
+
+
+```

@@ -1,0 +1,262 @@
+---
+title: "Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+params:
+    dataset_name: "Lee"
+    cell_type: "T_cells"
+
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, fig.width = 20, fig.height = 20)
+```
+
+
+# Loading libraries and setting directories
+```{R loading libraries, include = F, echo = T}
+library(Seurat)
+
+# plotting and data science packages
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+
+# co-expression network analysis packages:
+library(WGCNA)
+library(hdWGCNA)
+library(knitr)
+# using the cowplot theme for ggplot
+theme_set(theme_cowplot())
+# devtools::install_github('smorabit/hdWGCNA', ref='dev')
+
+# set random seed for reproducibility
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+source("02_scripts/101_processing_external_datasets/qc_functions.R")
+set.seed(1123)
+# optionally enable multithreading
+enableWGCNAThreads(nThreads = 40)
+library(NetRep)
+```
+
+
+```{R load reference}
+# This is from paper_figures (in scripts/hdWGCNA/..) figure_4_seurat_prep.rmd --> with the addition of metadata by seurat_prep in figure 1
+data_input <- "02_scripts/overview_analysis/01_Figure/data/"
+reference_dataset <- readRDS(file = paste0(data_input, "seurat_wgcna_annotated.rds"))
+```
+
+
+```{R load prepared list}
+# This is from: /scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/101_processing_external_datasets/06_hgWGCNA.rmd
+seurat_list_prepared <- readRDS("03_processing/101_processing_exernal/data/processed_seurat_list/seurat_list_prepared.rds")
+```
+
+```{R selecting dataset and arguments}
+regress_mt <- TRUE
+cell_type_of_interest <- "T_cells"
+col_cell_type <- "generalised_ann_1"
+
+wgcna_name_ref <- GetActiveWGCNAName(reference_dataset)
+wgcna_name_query <- paste0(reduction_name, "_query")
+
+sample_col_list <- list(
+    Biermann = "ID",
+    Gonzalez = "sample_names",
+    Inhouse = "sample",
+    Lee = "Sample"
+)
+sample_col <- sample_col_list[[dataset_to_use]]
+list_seurat <- seurat_list_prepared
+```
+
+```{R making the reduction}
+seurat_list_unprocessed <- lapply(names(list_seurat), function(list_name) {
+    seurat_obj <- list_seurat[[list_name]]
+    Idents(seurat_obj) <- "generalised_ann_1"
+    features <- 2000
+    reduction_name <- paste0(list_name, "_im_", cell_type_of_interest)
+
+
+    seurat_obj <- subset(x = seurat_obj, idents = cell_type_of_interest, invert = F)
+    seurat_obj[["RNA"]] <- split(seurat_obj[["RNA"]], f = seurat_obj@meta.data[[sample_col]])
+    seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = "vst", nfeatures = features, verbose = TRUE)
+    hvf_info <- HVFInfo(seurat_obj)
+    top_variable_genes <- hvf_info[order(hvf_info$variance.standardized, decreasing = TRUE), ]
+    top_x_genes <- rownames(top_variable_genes)[1:features]
+    VariableFeatures(seurat_obj) <- top_x_genes
+    seurat_obj <- ScaleData(object = seurat_obj, vars.to.regress = c("percent_mt"), features = top_x_genes, verbose = FALSE)
+    seurat_obj <- RunPCA(
+        object = seurat_obj, nfeatures.print = 5, ndims.print = 1:2, reduction.name = paste0("pca_", reduction_name)
+    )
+    print(ElbowPlot(seurat_obj, reduction = paste0("pca_", reduction_name), ndims = 100))
+    print(VizDimLoadings(seurat_obj, dims = 1:5, reduction = paste0("pca_", reduction_name), nfeatures = 15))
+    seurat_obj
+})
+```
+
+```{R integration}
+names(seurat_list_unprocessed) <- names(list_seurat)
+
+seurat_processed <- lapply(names(seurat_list_unprocessed), function(list_name) {
+    reduction_name <- paste0(list_name, "_im_", cell_type_of_interest)
+
+    seurat_obj <- seurat_list_unprocessed[[list_name]]
+    seurat_obj <- IntegrateLayers(
+        object = seurat_obj, method = HarmonyIntegration,
+        orig.reduction = paste0("pca_", reduction_name), new.reduction = paste0("harmony_pca.", reduction_name),
+        verbose = TRUE
+    )
+    seurat_obj <- FindNeighbors(seurat_obj, reduction = paste0("pca_", reduction_name), dims = 1:25)
+    seurat_obj <- RunUMAP(seurat_obj, reduction = paste0("pca_", reduction_name), dims = 1:25, reduction.name = paste0("umap.pca.", reduction_name))
+    seurat_obj <- JoinLayers(seurat_obj)
+    seurat_obj
+})
+```
+
+
+```{R preparing the network for projection}
+names(seurat_processed) <- names(seurat_list_unprocessed)
+
+seurat_list <- lapply(names(seurat_processed), function(list_name) {
+    reduction_name <- paste0(list_name, "_im_", cell_type_of_interest)
+    seurat_query <- seurat_processed[[list_name]]
+    wgcna_name_query <- list_name
+    genes_use <- GetWGCNAGenes(reference_dataset)
+    genes_use[genes_use %in% rownames(seurat_query)] %>%
+        length() %>%
+        print()
+    genes_use <- genes_use[genes_use %in% rownames(seurat_query)]
+
+    seurat_query <- SetupForWGCNA(
+        seurat_query,
+        features = genes_use,
+        wgcna_name = wgcna_name_query
+    )
+
+    seurat_query <- MetacellsByGroups(
+        seurat_obj = seurat_query,
+        group.by = c("generalised_ann_1", sample_col), # specify the columns in seurat_obj@meta.data to group by
+        k = 25,
+        max_shared = 10,
+        reduction = paste0("pca_", reduction_name), # select the dimensionality reduction to perform KNN on
+        ident.group = "generalised_ann_1", # set the Idents of the metacell seurat object
+        wgcna_name = wgcna_name_query
+    )
+    seurat_query <- NormalizeMetacells(seurat_query)
+
+    seurat_query <- SetDatExpr(
+        seurat_query,
+        group_name = cell_type_of_interest,
+        group.by = col_cell_type
+    )
+    seurat_query <- TestSoftPowers(
+        seurat_query,
+        networkType = "signed"
+    )
+    plot_list <- PlotSoftPowers(seurat_query, wgcna_name = wgcna_name_query)
+    print(wrap_plots(plot_list, ncol = 2))
+    seurat_query
+})
+names(seurat_list) <- names(seurat_processed)
+seurat_list_networked <- lapply(names(seurat_list), function(list_name) {
+    seurat_query <- seurat_list[[list_name]]
+    wgcna_name_query <- list_name
+    seurat_query <- ConstructNetwork(
+        seurat_query,
+        method = "tree",
+        deepSplit = 4, # Probably the most accurate, but depends on the graph, as it is a balance between sensitivity and robustness
+        detectCutHeight = 0.999,
+        minModuleSize = 25,
+        mergeCutHeight = 0.2,
+        tom_name = paste0(wgcna_name_query, "_5000_hvf_query"), # name of the topoligical overlap matrix written to disk
+        wgcna_name = wgcna_name_query,
+        overwrite_tom = TRUE
+    )
+    png(filename = paste0("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/overview_analysis/hdWGCNA/figs/", wgcna_name_query, "_dendogram_batch_unintegrated.png"))
+    print(PlotDendrogram(seurat_query,
+        wgcna_name = wgcna_name_query,
+        main = paste0("Tcell hdWGCNA Dendrogram of: ", list_name)
+    ))
+    dev.off()
+    print(PlotDendrogram(seurat_query,
+        wgcna_name = wgcna_name_query,
+        main = paste0("Tcell hdWGCNA Dendrogram of: ", list_name)
+    ))
+    seurat_query
+})
+```
+
+```{R extracting module info, include = F}
+names(seurat_list_networked) <- names(seurat_list)
+
+seurat_list_moduled <- lapply(names(seurat_list_networked), function(list_name) {
+    seurat_query <- seurat_list_networked[[list_name]]
+    wgcna_name_query <- list_name
+
+    seurat_query <- ModuleEigengenes(seurat_query, group.by.vars = sample_col)
+    seurat_query <- hdWGCNA::ModuleConnectivity(
+        seurat_query,
+        group_name = cell_type_of_interest,
+        group.by = col_cell_type
+    )
+    seurat_query
+})
+```
+
+
+```{R projecting }
+names(seurat_list_moduled) <- names(seurat_list_networked)
+seurat_list_projected <- lapply(names(seurat_list_moduled), function(list_name) {
+    seurat_query <- seurat_list_moduled[[list_name]]
+    wgcna_name_query <- list_name
+    seurat_query <- ProjectModules(
+        seurat_obj = seurat_query,
+        seurat_ref = reference_dataset,
+        vars.to.regress = c("percent_mt"), # optionally regress covariates when running ScaleData
+        # group.by.vars = sample_col, # column in seurat_query to run harmony on
+        wgcna_name = wgcna_name_ref,
+        wgcna_name_proj = wgcna_name_ref,
+        assay = "RNA" # assay for query dataset
+    )
+
+    # calculate the connectivity
+    seurat_query <- ModuleConnectivity(
+        seurat_query,
+        TOM_use = wgcna_name_query
+    )
+
+    seurat_query <- SetActiveWGCNA(seurat_query, wgcna_name_query)
+    seurat_query
+})
+```
+
+
+```{R module preservation analysis }
+names(seurat_list_projected) <- names(seurat_list_moduled)
+seurat_list_preserved <- lapply(names(seurat_list_projected), function(list_name) {
+    seurat_query <- seurat_list_projected[[list_name]]
+    wgcna_name_query <- list_name
+    seurat_query <- ModulePreservationNetRep(
+        seurat_query,
+        reference_dataset,
+        name = "testing_NetRep",
+        n_permutations = 3000,
+        n_threads = 50, # number of threads to run in Parallel
+        TOM_use = wgcna_name_query, # specify the name of the hdWGCNA experiment that contains the TOM for the query dataset
+        wgcna_name = wgcna_name_query,
+        wgcna_name_ref = wgcna_name_ref
+    )
+    saveRDS(seurat_query, file = paste0("03_processing/101_processing_exernal/data/optimising_hdWGCNA/query_processed_", list_name, ".rds"))
+    seurat_query
+})
+```
+
+```{R}
+sessionInfo()
+```

@@ -1,0 +1,180 @@
+
+---
+title: "Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 1
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/03_QC_seurat.rmd")
+```
+
+```{R Annotating_clusters, echo = FALSE, eval = F}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+primary_colors <- c("#66c2a5", "#fc8d62", "#8da0cb", "#e78ac3")
+primary_colors_sample <- c("#66c2a5", "#fc8d62", "#fc8d62", "#8da0cb", "#e78ac3", "#e78ac3", "#e78ac3", "#e78ac3")
+primary <- c("CUP", "Colon", "Colon", "Lung", "Melanoma", "Melanoma", "Melanoma", "Melanoma")
+sample_primary <- c("CUP", "Colon_1", "Colon_2", "Lung", "Melanoma_1_sorted", "Melanoma_2_sorted", "Melanoma_2_unsorted", "Melanoma_3_unsorted")
+
+
+df <- data.frame()
+i <- 0
+for (files in list.files("03_processing/08_annotation/data", full.names = TRUE)[1:8]) {
+    i <- i + 1
+    print(basename(files))
+    print(files)
+    sample <- sub("\\..*", "", basename(files))
+    seurat_obj <- readRDS(files)
+    cluster_counts <- table(Idents(seurat_obj))
+    cluster_df <- as.data.frame(cluster_counts)
+    colnames(cluster_df) <- c("Cluster", "Cell_Count")
+    cluster_df$sample <- sample
+    cluster_df$sample_primary <- sample_primary[i]
+    df <- rbind(df, cluster_df)
+}
+
+df %>%
+    group_by(sample, Cluster) %>%
+    summarise(n = sum(Cell_Count), .groups = "drop") %>%
+    group_by(sample) %>%
+    mutate(pct = (n / sum(n)) * 100) -> pct_df
+
+
+ggplot(data = pct_df, aes(x = sample_primary, y = pct, fill = Cluster)) +
+    geom_bar(stat = "identity") +
+    theme(axis.text.x = element_text(angle = -90, hjust = 0))
+ggsave(file = "02_scripts/better_plot.png")
+```
+
+
+```{R old code, eval = T}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+primary_colors <- c("#66c2a5", "#fc8d62", "#8da0cb", "#e78ac3")
+primary_colors_sample <- c("#66c2a5", "#fc8d62", "#fc8d62", "#8da0cb", "#e78ac3", "#e78ac3", "#e78ac3", "#e78ac3")
+primary <- c("CUP", "Colon", "Colon", "Lung", "Melanoma", "Melanoma", "Melanoma", "Melanoma")
+sample_primary <- c("CUP", "Colon_1", "Colon_2", "Lung", "Melanoma_1_sorted", "Melanoma_2_sorted", "Melanoma_2_unsorted", "Melanoma_3_unsorted")
+
+
+meta_data$Cells_postqc <- c(442, 773, 252, 9045, 7486, 5104, 9888, 15454)
+
+
+values <- lapply(list.files("03_processing/08_annotation/data", full.names = TRUE)[1:8], function(file) {
+    seurat_obj <- readRDS(file)
+    ncol(seurat_obj)
+    if ("Brain" %in% levels(seurat_obj)) {
+        seurat_obj <- subset(x = seurat_obj, idents = c("Tumour", "Brain"), invert = TRUE)
+    } else {
+        seurat_obj <- subset(x = seurat_obj, idents = c("Tumour"), invert = TRUE)
+    }
+    value <- ncol(seurat_obj)
+})
+
+meta_data$Cells_immune <- as.numeric(values)
+conv_data <- type_convert(meta_data) # Convert all of the characters into numeric
+conv_data$primary <- primary
+# write.csv(meta_data, file = here("03_processing/01_QC/data/meta_data_2.csv"))
+# meta_data <- read.csv(here("03_processing/01_QC/data/meta_data_2.csv"))
+
+### Cells-preQC
+
+cell_count_preqc <- ggplot(
+    data = conv_data,
+    mapping = aes(x = sample_name, y = Cells, fill = sample_name)
+) +
+    geom_col() +
+    # facet_wrap(~primary)+
+    # scale_fill_paletteer_d("ggsci::default_nejm") +
+    scale_fill_manual(values = primary_colors_sample) +
+    labs(
+        title = "Initial cell count per sample",
+        x = "Sample name",
+        y = "Number of cells after QC detected"
+    ) +
+    theme(
+        axis.title.x = element_text(),
+        axis.title.y = element_text(),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none",
+        axis.title = element_text()
+    ) +
+    geom_text(aes(label = Cells),
+        vjust = -.5
+    )
+
+
+
+### Cells-postQC
+cell_count_postqc <- ggplot(
+    data = conv_data,
+    mapping = aes(x = sample_name, y = Cells_postqc, fill = sample_name)
+) +
+    geom_col() +
+    scale_fill_manual(values = primary_colors_sample) +
+    labs(
+        title = "Cell count per sample post QC",
+        x = "Sample name",
+        y = "Number of cells after QC detected"
+    ) +
+    theme(
+        axis.title.x = element_text(),
+        axis.title.y = element_text(),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none",
+        axis.title = element_text()
+    ) +
+    geom_text(aes(label = Cells_postqc),
+        vjust = -.5
+    )
+
+
+### Cells-immune
+cell_count_immune <- ggplot(
+    data = conv_data,
+    mapping = aes(x = sample_name, y = Cells_immune, fill = sample_name)
+) +
+    geom_col() +
+    scale_fill_paletteer_d("ggsci::default_nejm") +
+    labs(
+        title = "Immune cell count per sample",
+        x = "Sample name",
+        y = "Number of cells after QC detected"
+    ) +
+    theme(
+        axis.title.x = element_text(),
+        axis.title.y = element_text(),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none",
+        axis.title = element_text()
+    ) +
+    geom_text(aes(label = Cells_immune),
+        vjust = -1.5
+    )
+```
+
+```{R pdf, eval = T}
+ggsave(plot = cell_count_preqc, filename = paste0("03_processing/08_annotation/figs/general/preQC_2.png"))
+ggsave(plot = cell_count_postqc, filename = paste0("03_processing/08_annotation/figs/general/postQC_2.png"))
+# ggsave(plot = cell_count_immune, filename = paste0("03_processing/08_annotation/figs/general/immune.png"))
+```

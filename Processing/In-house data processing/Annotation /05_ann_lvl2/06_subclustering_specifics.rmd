@@ -1,0 +1,281 @@
+# Tomorrow,
+###  1. Check with Juan the markers of the objects to really confirm my findings.
+###  2. Overlap all of the previous annotations in the bigger objects.
+###  3. Compare the findings of annotation with the results in wetlab, do things correlate with the values found?
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+# install.packages("languageserver")
+```
+
+```{R general functions, eval =T}
+library(here)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+output_figs <- "03_processing/13_phase_6/figs/metabolic/"
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+source("02_scripts/04_integration/functions.R")
+source("02_scripts/06_analysing_annotations/utils.R")
+library(dittoSeq)
+```
+
+```{R loading the objects}
+low_mt_tseur <- readRDS(file = "03_processing/13_phase_6/data/metabolic/low_mt_tseur.rds")
+high_mt_tseur <- readRDS(file = "03_processing/13_phase_6/data/metabolic/high_mt_tseur.rds")
+```
+
+```{R naming the objects}
+reduction_name <- "low_mt"
+
+### Low mt
+Idents(object = low_mt_tseur) <- "RNA_snn_res.0.5" # Order is messed up, so the order of sizes does not correspond
+# Idents(tseur) <- factor(x = Idents(tseur), levels = as.character(sort(as.numeric(levels(tseur)))))
+Idents(low_mt_tseur) %>% levels()
+new.cluster.ids <- c("Exhausted_CD8", "Proliferating_CD8", "Central_memory_CD4", "Tfh_cells", "Tregs", "NKT_MAIT", "Proliferating_CD4")
+names(new.cluster.ids) <- levels(low_mt_tseur)
+low_mt_tseur <- RenameIdents(low_mt_tseur, new.cluster.ids)
+low_mt_tseur[["low_mt_annotation"]] <- Idents(low_mt_tseur)
+dittoDimPlot(low_mt_tseur, reduction.use = paste0("umap.harmony.", "low_mt"), var = "low_mt_annotation", split.by = "primary_sample", do.label = TRUE)
+# # ggsave(filename=paste0(output_figs,"low_mt_annotated-per-sample.png"), width = 15, height = 10)
+
+
+dittoDimPlot(low_mt_tseur, reduction.use = paste0("umap.harmony.", "low_mt"), var = "low_mt_annotation", do.label = TRUE)
+# # ggsave(filename=paste0(output_figs,"low_mt_annotated.png"), width = 15, height = 10)
+
+table(Idents(low_mt_tseur))
+```
+
+```{R high_mt}
+reduction_name <- "high_mt"
+
+### high mt
+Idents(object = high_mt_tseur) <- "RNA_snn_res.0.3" # Order is messed up, so the order of sizes does not correspond
+# Idents(tseur) <- factor(x = Idents(tseur), levels = as.character(sort(as.numeric(levels(tseur)))))
+Idents(high_mt_tseur) %>% levels()
+new.cluster.ids <- c("CD8_1", "Ribosomal_cells", "Bad_quality", "Proliferating_CD8", "Tregs", "Proliferating_CD8_2")
+names(new.cluster.ids) <- levels(high_mt_tseur)
+high_mt_tseur <- RenameIdents(high_mt_tseur, new.cluster.ids)
+high_mt_tseur[["high_mt_annotation"]] <- Idents(high_mt_tseur)
+dittoDimPlot(high_mt_tseur, reduction.use = paste0("umap.harmony.", "high_mt"), var = "high_mt_annotation", split.by = "primary_sample", do.label = TRUE)
+# ggsave(filename=paste0(output_figs,"high_mt_annotated-per-sample.png"), width = 15, height = 10)
+
+
+dittoDimPlot(high_mt_tseur, reduction.use = paste0("umap.harmony.", "high_mt"), var = "high_mt_annotation", do.label = TRUE)
+# ggsave(filename=paste0(output_figs,"high_mt_annotated.png"), width = 15, height = 10)
+
+table(Idents(high_mt_tseur))
+```
+
+```{R}
+seurat_obj <- readRDS(file = "03_processing/12_phase_5/data/integrated_immune_annotated_lvl2.rds")
+dittoDimPlot(seurat_obj, reduction.use = paste0("umap.harmony.", "immune_no_doub"), var = "ann_lvl_2", do.label = TRUE)
+
+
+tseur <- readRDS(file = "03_processing/12_phase_5/data/Tcell_seurat_annotated.rds")
+reduction_name <- "Tcell"
+DimPlot(tseur, reduction = paste0("umap.harmony.", reduction_name), pt.size = 0.1, label = T, group.by = "ann_lvl_1_filtered") & NoAxes()
+DimPlot(tseur, reduction = paste0("umap.harmony.", reduction_name), pt.size = 0.1, label = T, group.by = "ann_lvl_2_Tcells") & NoAxes()
+
+p1 <- dittoDimPlot(low_mt_tseur, reduction.use = paste0("umap.harmony.", "low_mt"), var = "ann_lvl_2_Tcells", split.by = "ann_lvl_2_Tcells", do.label = TRUE, out.list = TRUE)
+p2 <- dittoDimPlot(low_mt_tseur, reduction.use = paste0("umap.harmony.", "low_mt"), var = "low_mt_annotation", split.by = "low_mt_annotation", do.label = TRUE)
+
+combined_plot <- p1 / p2
+p3 <- grid.arrange(p1, p2)
+
+# # ggsave(filename=paste0(output_figs,"comparing_annotation.png"),plot = combined_plot, width = 15, height = 10)
+```
+
+
+# Plan:
+
+Ditch the level 2 annotation?
+Look only at these subsets of mt high and low
+
+For high mt, use res 0.9
+For  low_mt use res 1.5 and let's see.
+```{R}
+excel_sheet <- function(markers, output_dir, name) {
+    library(writexl)
+    print(paste0("Output will be put in: ", output_dir, name, ".xlsx"))
+    if (file.exists(output_dir)) {
+        markers %>%
+            arrange(cluster, desc(avg_log2FC)) %>% # Arrange within each cluster
+            group_by(cluster) %>%
+            select(cluster, pct.1, pct.2, p_val, p_val_adj, avg_log2FC, gene) %>%
+            group_split() %>% # Split into list by 'cluster'
+            setNames(unique(markers$cluster)) %>% # Name list elements
+            writexl::write_xlsx(paste0(output_dir, name, ".xlsx"))
+    } else {
+        stop("Directory does not exist")
+    }
+}
+output_excel <- "03_processing/13_phase_6/data/metabolic/"
+```
+
+
+```{R}
+low_mt_tseur <- readRDS(file = "03_processing/13_phase_6/data/metabolic/low_mt_tseur.rds")
+reduction_name <- "low_mt"
+
+### Low mt
+Idents(object = low_mt_tseur) <- "RNA_snn_res.1.5"
+low_mt_tseur.markers <- FindAllMarkers(
+    object = low_mt_tseur,
+    only.pos = TRUE, min.pct = 0.25,
+    logfc.threshold = 0.25
+)
+excel_sheet(low_mt_tseur.markers, output_excel, "low_mt_tseur.1.5_correct")
+DimPlot(low_mt_tseur, reduction = paste0("umap.harmony.", reduction_name), label = T) & NoAxes()
+# ggsave(filename=paste0(output_figs,"umap_1.5_low_mt.png"), width = 10, height = 10)
+
+VlnPlot(low_mt_tseur, features = c("percent_mt", "percent.rb", "nCount_RNA", "nFeature_RNA", "doublet.score"))
+# ggsave(filename=paste0(output_figs,"violin_basic_stats_1.5.png"), width = 15, height = 15)
+
+low_mt_tseur@meta.data$nCount_RNA_log <- log(low_mt_tseur@meta.data$nCount_RNA)
+low_mt_tseur@meta.data$nFeature_RNA_log <- log(low_mt_tseur@meta.data$nFeature_RNA)
+VlnPlot(low_mt_tseur, features = c("percent_mt", "percent.rb", "nCount_RNA_log", "nFeature_RNA_log", "doublet.score"))
+# ggsave(filename=paste0(output_figs,"violin_basic_stats_log.png"), width = 15, height = 15)
+
+dittoDimPlot(low_mt_tseur, reduction.use = paste0("umap.harmony.", "low_mt"), var = "RNA_snn_res.1.5", split.by = "RNA_snn_res.1.5")
+# ggsave(filename=paste0(output_figs,"umaps_per_cluster_low_1.5.png"), width = 15, height = 15)
+
+dittoDimPlot(low_mt_tseur, reduction.use = paste0("umap.harmony.", "low_mt"), var = "LAMP3")
+
+
+high_mt_tseur <- readRDS(file = "03_processing/13_phase_6/data/metabolic/high_mt_tseur.rds")
+
+
+reduction_name <- "high_mt"
+Idents(object = high_mt_tseur) <- "RNA_snn_res.0.9"
+
+high_mt_tseur.markers <- FindAllMarkers(
+    object = high_mt_tseur,
+    only.pos = TRUE, min.pct = 0.25,
+    logfc.threshold = 0.25
+)
+excel_sheet(high_mt_tseur.markers, output_excel, "high_mt_tseur.0.9_correct")
+DimPlot(high_mt_tseur, reduction = paste0("umap.harmony.", reduction_name), label = T) & NoAxes()
+# ggsave(filename=paste0(output_figs,"umap_0.9_high_mt.png"), width = 10, height = 10)
+
+VlnPlot(high_mt_tseur, features = c("percent_mt", "percent.rb", "nCount_RNA", "nFeature_RNA", "doublet.score"))
+# ggsave(filename=paste0(output_figs,"violin_basic_stats_0.9_high.png"), width = 15, height = 15)
+
+high_mt_tseur@meta.data$nCount_RNA_log <- log(high_mt_tseur@meta.data$nCount_RNA)
+high_mt_tseur@meta.data$nFeature_RNA_log <- log(high_mt_tseur@meta.data$nFeature_RNA)
+VlnPlot(high_mt_tseur, features = c("percent_mt", "percent.rb", "nCount_RNA_log", "nFeature_RNA_log", "doublet.score"))
+# ggsave(filename=paste0(output_figs,"violin_basic_stats_0.9_high_log.png"), width = 15, height = 15)
+
+dittoDimPlot(high_mt_tseur, reduction.use = paste0("umap.harmony.", "high_mt"), var = "RNA_snn_res.0.9", split.by = "RNA_snn_res.0.9")
+# ggsave(filename=paste0(output_figs,"umaps_per_cluster_high_0.9.png"), width = 15, height = 15)
+
+
+dittoDimPlot(high_mt_tseur, reduction.use = paste0("umap.harmony.", "high_mt"), var = "CX3CR1", order = "decreasing")
+dittoDimPlot(high_mt_tseur, reduction.use = paste0("umap.harmony.", "high_mt"), var = "NKG7", order = "decreasing")
+```
+
+```{R annotating them again}
+seurat_obj <- readRDS(file = "03_processing/12_phase_5/data/integrated_immune_annotated_lvl2.rds")
+dittoDimPlot(seurat_obj, reduction.use = paste0("umap.harmony.", "immune_no_doub"), var = "ann_lvl_2", do.label = TRUE)
+
+
+tseur <- readRDS(file = "03_processing/12_phase_5/data/Tcell_seurat_annotated.rds")
+reduction_name <- "Tcell"
+
+
+low_mt_tseur <- readRDS(file = "03_processing/13_phase_6/data/metabolic/low_mt_tseur.rds")
+reduction_name <- "low_mt"
+
+Idents(object = low_mt_tseur) <- "RNA_snn_res.1.5"
+Idents(low_mt_tseur) %>% levels()
+new.cluster.ids <- c("Proliferating_CD8", "Tcm_CD4", "Texh_CD8", "Tfh_cells", "Tem_CD8", "Teff_CD8", "Proliferating_CD4", "Naive_CD8_NK_mix", "Tregs_memory", "Proliferating_CD8", "Tregs", "GammaDelta_CD8", "Doublets", "Cycling_gammadelta", "NK", "Doublets", "Inactive_Tcells", "Bad-Quality")
+names(new.cluster.ids) <- levels(low_mt_tseur)
+low_mt_tseur <- RenameIdents(low_mt_tseur, new.cluster.ids)
+low_mt_tseur[["low_mt_annotation_specific"]] <- Idents(low_mt_tseur)
+
+
+
+high_mt_tseur <- readRDS(file = "03_processing/13_phase_6/data/metabolic/high_mt_tseur.rds")
+reduction_name <- "high_mt"
+Idents(object = high_mt_tseur) <- "RNA_snn_res.0.9"
+
+Idents(high_mt_tseur) %>% levels()
+new.cluster.ids <- c("Bad-Quality", "Naive_cells", "Teff_CD8", "Tcm", "Proliferating_CD8", "Tregs", "Bad-Quality", "Proliferating_NK", "Temra", "Bad-Quality")
+names(new.cluster.ids) <- levels(high_mt_tseur)
+high_mt_tseur <- RenameIdents(high_mt_tseur, new.cluster.ids)
+high_mt_tseur[["high_mt_annotation_specific"]] <- Idents(high_mt_tseur)
+
+
+unique(Idents(seurat_obj))
+low_mt_tseur@meta.data$mt_annotation <- low_mt_tseur@meta.data$low_mt_annotation_specific
+high_mt_tseur@meta.data$mt_annotation <- high_mt_tseur@meta.data$high_mt_annotation_specific
+
+cells_meta_trim_low <- subset(low_mt_tseur@meta.data, select = c("mt_annotation"))
+cells_meta_trim_high <- subset(high_mt_tseur@meta.data, select = c("mt_annotation"))
+
+meta_data_to_add <- NULL
+meta_data_to_add <- rbind(cells_meta_trim_low, cells_meta_trim_high)
+
+tseur <- AddMetaData(tseur, meta_data_to_add)
+table(tseur@meta.data$mt_annotation)
+```
+
+```{R chceking out the annotation}
+dittoDimPlot(low_mt_tseur, reduction.use = paste0("umap.harmony.", "low_mt"), var = "low_mt_annotation_specific", split.by = "primary_sample", do.label = FALSE)
+# ggsave(filename=paste0(output_figs,"annotated_per_primary_sample_low_mt.png"), width = 15, height = 15)
+
+
+VlnPlot(low_mt_tseur, features = c("percent_mt", "percent.rb", "nCount_RNA_log", "nFeature_RNA_log", "doublet.score"))
+# ggsave(filename=paste0(output_figs,"basic_stats_annotated_low_log.png"), width = 15, height = 15)
+
+VlnPlot(low_mt_tseur, features = c("CD8A", "CD8B", "CD4", "CD3E", "CD3D"))
+# ggsave(filename=paste0(output_figs,"general_marker_violin_low.png"), width = 10, height = 10)
+
+FeaturePlot(low_mt_tseur, features = c("KIR2DL3", "KIR3DL1", "TRGC2", "TNFRSF9"), reduction = "umap.harmony.low_mt", order = F)
+VlnPlot(low_mt_tseur, features = c("CD14", "CD68", "CD1C", "LAMP3", "IFNG")) # , reduction = "umap.harmony.low_mt")
+table(Idents(low_mt_tseur))
+low_mt_tseur.markers <- FindAllMarkers(
+    object = low_mt_tseur,
+    only.pos = TRUE, min.pct = 0.25,
+    logfc.threshold = 0.25
+)
+table(Idents(low_mt_tseur))
+```
+
+```{R high_mt}
+dittoDimPlot(high_mt_tseur, reduction.use = paste0("umap.harmony.", "high_mt"), var = "high_mt_annotation_specific", split.by = "primary_sample", do.label = TRUE)
+# ggsave(filename=paste0(output_figs,"annotated_per_primary_sample_high_mt.png"), width = 20, height = 20)
+
+
+VlnPlot(high_mt_tseur, features = c("percent_mt", "percent.rb", "nCount_RNA_log", "nFeature_RNA_log", "doublet.score"))
+# ggsave(filename=paste0(output_figs,"basic_stats_annotated_high.png"), width = 10, height = 10)
+
+VlnPlot(high_mt_tseur, features = c("CD14", "CD68", "CD1C", "LAMP3", "IFNG")) # , reduction = "umap.harmony.high_mt")
+
+VlnPlot(high_mt_tseur, features = c("CD8A", "CD8B", "CD4", "CD3E", "CD3D"))
+# ggsave(filename=paste0(output_figs,"general_marker_violin_high.png"), width = 10, height = 10)
+
+table(Idents(high_mt_tseur))
+high_mt_tseur.markers <- FindAllMarkers(
+    object = high_mt_tseur,
+    only.pos = TRUE, min.pct = 0.25,
+    logfc.threshold = 0.25
+)
+```
+
+
+

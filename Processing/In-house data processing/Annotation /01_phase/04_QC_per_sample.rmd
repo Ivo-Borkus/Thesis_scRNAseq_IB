@@ -1,0 +1,85 @@
+---
+title: "Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 1
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/04_QC_per_sample.rmd")
+```
+
+
+```{R}
+cat("it is running")
+# Loop over each file and render it
+for (sample_file in list.files("02_scripts/workflow_per_sample", pattern = "^sample_\\d+\\.rmd$", full.names = TRUE)) {
+    # Extract the sample name (without extension)
+    sample_name <- tools::file_path_sans_ext(basename(sample_file))
+
+    # Define the output file path
+    output_path <- file.path("02_scripts/knits/workflow_per_sample")
+    output_file <- file.path(paste0(sample_name, ".html"))
+    print(sample_file)
+    # Render the RMarkdown file
+    rmarkdown::render(
+        input = sample_file,
+        output_format = "html_document",
+        output_dir = output_path,
+        output_file = output_file
+    )
+
+    message("Rendered: ", sample_name)
+}
+```
+
+```{R Filtering on combined data, eval = FALSE, echo = TRUE}
+seurat_list <- list.files("03_processing/01_QC/data/subsets/", full.names = TRUE)
+seurat_obj_list_filtered <- lapply(seurat_list, readRDS)
+
+for (i in 1:length(seurat_obj_list_filtered)) {
+    print(paste("number of cells in sample", i, ": ", ncol(seurat_obj_list_filtered[[i]])))
+    print(paste("number of features in sample", i, ": ", nrow(seurat_obj_list_filtered[[i]])))
+}
+
+list_sampls <- sapply(seurat_obj_list_filtered, function(seurat) {
+    name <- unique(seurat$sample)
+})
+
+
+names(seurat_obj_list_filtered) <- list_sampls
+seurat_obj_filt <- merge(seurat_obj_list_filtered[[1]], y = seurat_obj_list_filtered[2:length(seurat_obj_list_filtered)])
+
+saveRDS(seurat_obj_filt, file = "03_processing/01_QC/data/filtered_merged_seurat.rds")
+```
+
+
+```{R}
+print(paste("number of cells in sample", ncol(seurat_obj_filt)))
+print(paste("number of features in sample", nrow(seurat_obj_filt)))
+```
+
+## Code to knit
+
+rmarkdown::render("02_scripts/04_QC_per_sample.rmd", output_format = "html_document", output_dir = "02_scripts/knits/", output_file = "28_02_2025_QC_per_sample.html")

@@ -1,0 +1,145 @@
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+```
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+library(DoubletFinder)
+library(clustree)
+library(knitr)
+library(rscrublet)
+library(Matrix)
+library(patchwork)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+```
+
+```{R Loading in meta data, echo = FALSE, message = FALSE}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+```
+
+```{R setting variables}
+output_fig <- "03_processing/10_integration/figs/immune/"
+output_data <- NA
+input_data <- "03_processing/10_integration/data/merged_subset_immune.rds"
+sample <- "Immune subset"
+reduction_name <- "umap.merged_subset_immune"
+res <- "1.5"
+```
+```{R gene features}
+umap_feature_vec <- c(
+    "PTPRC", # Immune
+    "TOP2A", "MIK67", # Proliferative
+    ## Lymphoid
+    "CD3D", "CD3E", # T cells
+    "CD4", "CD8A", "CD8B", # distinction between 4 and 8
+    "FOXP3", "IL2RA", # T regs
+    "TOX2", # Tfh cell
+    "NCAM1", "KLRF1", # NK cells
+    "MS4A1", "CD79A", # B cells
+    # "TCL1A", # Naive B cells
+    # "BANK1", "BLK", # Memory/ activated B cells
+    "SDC1", "PRDM1", # Plasma cells
+    ## Myeloid
+    "S100A8", "CD14", # Monocytes
+    "CD163", "CD68", # Macrophage markers
+    "P2RY12", "SLC2A5", # microglia
+    "IL3RA", # pDCs
+    "CD1C", # DCs
+    "MAG", "MLANA" # other cells
+)
+```
+
+```{R general functions}
+creating_res_umap <- function(seurat_obj, reduction_name) {
+    resolution_columns <- grep("^RNA_snn_res\\.",
+        colnames(seurat_obj@meta.data),
+        value = TRUE
+    )
+    umap_resolution_combined <- DimPlot(
+        object = seurat_obj,
+        reduction = reduction_name,
+        group.by = resolution_columns,
+        pt.size = 0.1,
+        label = TRUE
+    ) & NoLegend() &
+        theme(plot.title = element_text(size = 10)) &
+        NoAxes()
+    return(umap_resolution_combined)
+}
+```
+
+
+
+
+```{R loading in data}
+# immune_subset_seurat
+seurat_obj <- readRDS(file = input_data)
+print(ncol(seurat_obj))
+```
+
+```{R Plotting features and umaps, include = TRUE, eval = TRUE, fig.height = 15, fig.width = 15}
+resolutions_umap <- creating_res_umap(seurat_obj, reduction_name)
+features <- FeaturePlot(seurat_obj,
+    features = umap_feature_vec,
+    reduction = reduction_name,
+    ncol = 3
+) & NoAxes()
+
+resolutions_umap
+features
+ggsave(resolutions_umap, file = paste0(output_fig, sample, "__resolution.png"))
+ggsave(features, file = paste0(output_fig, sample, "_features.png"), width = 20, height = 25)
+```
+
+```{R setting a resolution}
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+
+violin_QC_annotated <- VlnPlot(seurat_obj, features = c("nCount_RNA", "nFeature_RNA", "percent_mt", "doublet.score"), ncol = 2) &
+    theme(plot.title = element_text(size = 10))
+ggsave(violin_QC_annotated, file = paste0(output_fig, sample, "__violin_QCs_", res, ".png"))
+```
+
+
+
+```{R}
+# ggsave(umap_resolution(seurat_obj, paste0("umap.", reduction_name)), file = paste0(output_umap_res, reduction_name, ".png"), height = 20, width = 20)
+# ggsave(feature_plot(seurat_obj, paste0("umap.", reduction_name)), file = paste0(output_umap_feat, reduction_name, ".png"), height = 20, width = 20)
+# ggsave(umap_sample(seurat_obj, paste0("umap.", reduction_name), "Merging of samples using all QC checked cells"), file = paste0("03_processing/10_integration/figs/", reduction_name, "_sample.png"), height = 20, width = 20)
+```
+
+
+```{R eval = FALSE}
+rmarkdown::render(
+    input = paste0("02_scripts/03_phase/Immune/01_general_annotation_immune.rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits",
+    output_file = paste0("knits/03_phase/Immune/01_general_annotation.html")
+)
+```

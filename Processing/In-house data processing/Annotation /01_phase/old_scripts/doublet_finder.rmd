@@ -1,0 +1,252 @@
+
+# Chapter 2: Seurat workflow on filtered dataset
+
+## Normalisation
+```{R prenorm plot , echo = FALSE}
+violin_preNorm <- VlnPlot(seurat_obj, features = "GAPDH") + NoLegend()
+```
+```{R Normalisation, eval = new, echo = TRUE, include = FALSE}
+seurat_obj <- NormalizeData(
+    object = seurat_obj,
+    normalization.method = "LogNormalize",
+    scale.facor = 10000
+)
+saveRDS(seurat_obj, file = paste0(here(), "/03_processing/02_Norm/data/subsets/", sample, "_norm.rds"))
+```
+
+```{R load Normalisation, echo = FALSE, eval = load}
+seurat_obj <- readRDS(file = paste0(here(), "/03_processing/02_Norm/data/subsets/", sample, "_norm.rds"))
+```
+
+
+```{R postnorm plot , echo = FALSE}
+violin_postNorm <- VlnPlot(seurat_obj, features = "GAPDH") + NoLegend()
+```
+
+```{R plotting_basic_QC, fig.align="center", echo = FALSE,fig.width=10,fig.height=5, message  = FALSE}
+grid.arrange(violin_preNorm, violin_postNorm,
+    ncol = 2, nrow = 1
+)
+```
+
+## Finding variable features
+```{R Finding variable features, eval = new, echo = TRUE, include = FALSE}
+seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = "vst", nfeatures = 2000)
+all.genes <- rownames(seurat_obj)
+seurat_obj <- ScaleData(object = seurat_obj, features = all.genes)
+saveRDS(seurat_obj, file = paste0(here(), "/03_processing/03_Scale/data/subsets/", sample, "_scaled.rds"))
+```
+
+```{R load Scaling, eval = load, echo = FALSE}
+seurat_obj <- readRDS(file = paste0(here(), "/03_processing/03_Scale/data/subsets/", sample, "_scaled.rds"))
+```
+
+
+```{R variable_feature plot , echo = FALSE,message= FALSE, fig.width = 10}
+Variable_genes_plot <- LabelPoints(
+    plot = VariableFeaturePlot(seurat_obj),
+    points = head(VariableFeatures(seurat_obj), 10),
+    repel = TRUE
+)
+grid.arrange(VariableFeaturePlot(seurat_obj) & NoLegend(), Variable_genes_plot & NoLegend(),
+    ncol = 2, nrow = 1
+)
+```
+
+## Running PCA dim reduction
+```{R running PCA,eval = new, echo=TRUE}
+seurat_obj <- RunPCA(
+    object = seurat_obj,
+    features = VariableFeatures(object = seurat_obj),
+    nfeatures.print = 5, ndims.print = 1:2
+)
+saveRDS(seurat_obj, file = paste0(here(), "/03_processing/04_PCA/data/subsets/", sample, "_PCA.rds"))
+```
+
+```{R loading PCA, eval = load, echo = FALSE}
+seurat_obj <- readRDS(file = paste0(here(), "/03_processing/04_PCA/data/subsets/", sample, "_PCA.rds"))
+```
+
+### Plotting PCA dim reduction
+```{R PCA plots before clustering, fig.align="center", echo = FALSE, include = TRUE,fig.width=10}
+PCA_dim_plot <- DimPlot(seurat_obj, reduction = "pca") + NoLegend()
+PCA_elbow <- ElbowPlot(seurat_obj)
+Genes_influence_PCA <- VizDimLoadings(seurat_obj,
+    dims = 1:5, reduction = "pca", nfeatures = 15
+)
+# ===================================== #
+grid.arrange(PCA_dim_plot, PCA_elbow,
+    ncol = 2, nrow = 1
+)
+```
+
+```{R, echo = TRUE, fig.height=10,fig.width=10}
+Genes_influence_PCA
+DimHeatmap(seurat_obj, dims = 1:6, cells = 100, balanced = TRUE)
+```
+
+## Clustering cells
+```{R clustering,eval = new, include = FALSE, echo = FALSE}
+seurat_obj <- FindNeighbors(seurat_obj, dims = 1:10, reduction = "pca")
+saveRDS(seurat_obj, file = paste0(here(), "/03_processing/05_Neighbours/data/subsets/", sample, "_NN.rds"))
+```
+
+```{R loading neighbours, eval = load,echo = FALSE}
+seurat_obj <- readRDS(file = paste0(here(), "/03_processing/05_Neighbours/data/subsets/", sample, "_NN.rds"))
+```
+
+
+```{R clustering and umap, echo = FALSE, include = FALSE, eval = new}
+res_values <- c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.5)
+seurat_obj <- FindClusters(seurat_obj, resolution = res_values, algorithm = 4)
+seurat_obj <- RunUMAP(seurat_obj, dims = 1:10, reduction = "pca", reduction.name = "umap.unintegrated")
+
+saveRDS(seurat_obj, file = paste0(here(), "/03_processing/06_Clustering/data/subsets/", sample, "_clusters.rds"))
+```
+
+```{R loading umap and clusters, eval = load, echo = FALSE}
+seurat_obj <- readRDS(file = paste0(here(), "/03_processing/06_Clustering/data/subsets/", sample, "_clusters.rds"))
+```
+
+
+### Plotting PCA feature plots
+```{R feature pcas, echo = FALSE}
+Feature_mt <- FeaturePlot(seurat_obj, features = "percent_mt", reduction = "pca", pt.size = 0.1)
+Feature_count <- FeaturePlot(seurat_obj, features = "nCount_RNA", reduction = "pca", pt.size = 0.1)
+Feature_ds <- FeaturePlot(seurat_obj, features = "doublet.score", reduction = "pca", pt.size = 0.1)
+Feature_feat <- FeaturePlot(seurat_obj, features = "nFeature_RNA", reduction = "pca", pt.size = 0.1)
+```
+
+```{R plotting feature pcas, fig.align="center", echo = FALSE,fig.width=10,fig.height=10, message  = FALSE}
+PCA_dim_plot_with_clusters <- DimPlot(seurat_obj, reduction = "pca")
+
+grid.arrange(Feature_mt, Feature_count,
+    Feature_ds, Feature_feat, PCA_dim_plot_with_clusters,
+    ncol = 2, nrow = 3
+)
+```
+
+
+## Umap projection of data
+```{R umap plot, ig.align="center", echo = FALSE,fig.width=10,fig.height=10, message  = FALSE}
+clustered_res <- clustree(seurat_obj)
+
+resolution_columns <- grep("^RNA_snn_res\\.",
+    colnames(seurat_obj@meta.data),
+    value = TRUE
+)
+
+umap_resolution_combined <- DimPlot(
+    object = seurat_obj,
+    reduction = "umap.unintegrated",
+    group.by = resolution_columns,
+    pt.size = 0.1,
+    label = TRUE
+) & NoLegend() &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+
+
+clustered_res
+umap_resolution_combined
+```
+
+
+
+
+# Doubletfinder analysis on processed data
+```{R Doubletfinder, echo = FALSE, include = FALSE, eval = new}
+sweep_seurat <- paramSweep(seurat_obj, PCs = 1:10, sct = FALSE)
+sweep_stats_seurat <- summarizeSweep(sweep_seurat, GT = FALSE)
+
+# mean-variance-normalized bimodality coefficient
+bcmvn_seurat <- find.pK(sweep_stats_seurat)
+bcmvn_seurat$pK <- as.numeric(as.character(bcmvn_seurat$pK))
+BCmetric <- bcmvn_seurat$BCmetric
+pK_choose <- bcmvn_seurat$pK[which(BCmetric %in% max(BCmetric))]
+
+pk_optimisation_plot <- ggplot(bcmvn_seurat, aes(x = pK, y = BCmetric)) +
+    geom_point(color = "blue") +
+    geom_line(color = "black") +
+    geom_vline(xintercept = pK_choose, linetype = "dashed", color = "red", linewidth = 1) +
+    ggtitle("The BCmvn distributions") +
+    annotate("text", x = pK_choose, y = max(BCmetric), label = as.character(pK_choose), color = "red", hjust = -0.1)
+
+homotyp <- modelHomotypic(Idents(seurat_obj)) ## ex: annotations <- seu_kidney@meta.data$ClusteringResults
+nExp_poi <- round(0.075 * nrow(seurat_obj@meta.data)) ## Assuming 7.5% doublet formation rate - tailor for your dataset
+nExp_poi.adj <- round(nExp_poi * (homotyp))
+
+
+seurat_obj <- doubletFinder(seurat_obj, PCs = 1:10, pN = 0.25, pK = pK_choose, nExp = nExp_poi, reuse.pANN = FALSE, sct = FALSE)
+seurat_obj <- doubletFinder(seurat_obj, PCs = 1:10, pN = 0.25, pK = pK_choose, nExp = nExp_poi.adj, reuse.pANN = FALSE, sct = FALSE)
+saveRDS(seurat_obj, file = paste0("03_processing/01_QC/data/subsets/Doublet_finder/", sample, ".rds"))
+```
+
+
+```{R reading seurat, eval = load}
+seurat_obj <- readRDS(file = paste0("03_processing/01_QC/data/subsets/Doublet_finder/", sample, ".rds"))
+```
+
+```{R umap feature plots, echo = FALSE}
+Feature_mt_umap <- FeaturePlot(seurat_obj, features = "percent_mt", reduction = "umap.unintegrated", pt.size = 0.1) & NoAxes()
+Feature_count_umap <- FeaturePlot(seurat_obj, features = "nCount_RNA", reduction = "umap.unintegrated", pt.size = 0.1) & NoAxes()
+Feature_ds_umap <- FeaturePlot(seurat_obj, features = "doublet.score", reduction = "umap.unintegrated") & NoAxes()
+Feature_feat_umap <- FeaturePlot(seurat_obj, features = "nFeature_RNA", reduction = "umap.unintegrated") & NoAxes()
+```
+
+```{R plotting feature umaps, eval = FALSE, fig.align="center", echo = FALSE,fig.width=10,fig.height=10, message  = FALSE}
+grid.arrange(Feature_mt_umap, Feature_count_umap,
+    ncol = 2, nrow = 1
+)
+```
+
+```{R Plotting doublet_finder, fig.align="center", echo = FALSE,fig.width=10,fig.height=10, message  = FALSE}
+homotyp <- modelHomotypic(Idents(seurat_obj)) ## ex: annotations <- seu_kidney@meta.data$ClusteringResults
+nExp_poi <- round(0.075 * nrow(seurat_obj@meta.data)) ## Assuming 7.5% doublet formation rate - tailor for your dataset
+nExp_poi.adj <- round(nExp_poi * (homotyp))
+columns_meta_data <- colnames(seurat_obj@meta.data)
+columns_meta_data <- columns_meta_data[grepl("^DF", columns_meta_data)][1]
+pK_choose <- regmatches(columns_meta_data, gregexpr("\\d+\\.\\d+", columns_meta_data))[[1]][2]
+
+doublet_score_plot <- FeaturePlot(seurat_obj, features = "doublet.score", pt.size = 0.1) & NoAxes() & labs(title = "Scrublet scores")
+doublet_finder_score <- FeaturePlot(seurat_obj, features = paste0("pANN_0.25_", pK_choose, "_", nExp_poi.adj), pt.size = 0.1) & NoAxes() & labs(title = "Doublet finder score")
+classifications_string <- DimPlot(seurat_obj, group.by = paste0("DF.classifications_0.25_", pK_choose, "_", nExp_poi), pt.size = 0.1) & NoAxes()
+classifications_lenient <- DimPlot(seurat_obj, group.by = paste0("DF.classifications_0.25_", pK_choose, "_", nExp_poi.adj), pt.size = 0.1) & NoAxes()
+
+grid.arrange(
+    Feature_mt_umap,
+    Feature_count_umap,
+    doublet_score_plot,
+    doublet_finder_score,
+    classifications_string,
+    classifications_lenient,
+    nrow = 3, ncol = 2
+)
+```
+
+# Cell cycle analysis using seurat predefined gene lists
+
+## Cell cycle genes
+
+- PCNA expressed in S fase 
+- TOP2A, expressed in G2 and M phase
+- MCM6, expressed throughout cell cycle (tumour cells)
+- MKI67, expressed in G2 and M phase
+```{R Cell cycle, echo = FALSE}
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+seurat_obj <- CellCycleScoring(seurat_obj, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+
+## PCNA Large growth in S fase of transcription
+## TOP2A, expressed in G2 and M phase
+## MKI67, expressed in G2 and M phase
+## CC.difference is useful when you want so still differentiate between cell-cycling and quiescent cells, but not within the cell-cycle.
+seurat_obj$CC.Difference <- seurat_obj$S.Score - seurat_obj$G2M.Score
+score_plot <- FeaturePlot(seurat_obj, features = c("S.Score", "G2M.Score"), ncol = 2, pt.size = 0.1)
+# cycle_genes_plot & theme(plot.title = element_text(size = 10)) & NoAxes()
+```
+
+## Cell cycle scores
+```{R Plotting cell-cycle scores, echo = FALSE}
+score_plot & theme(plot.title = element_text(size = 10)) & NoAxes()
+```

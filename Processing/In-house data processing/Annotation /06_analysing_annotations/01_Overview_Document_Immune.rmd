@@ -1,0 +1,645 @@
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+# install.packages("languageserver")
+```
+
+```{R general functions, eval =T}
+library(here)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+output_figs <- "03_processing/14_phase_7/figs/"
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+source("02_scripts/04_integration/functions.R")
+source("02_scripts/06_analysing_annotations/utils.R")
+library(scales)
+
+library(dittoSeq)
+```
+
+```{R}
+tseur <- readRDS(file = "03_processing/12_phase_5/data/Tcell_seurat_annotated.rds")
+reduction_name <- "Tcell"
+DimPlot(tseur, reduction = paste0("umap.harmony.", reduction_name), pt.size = 0.1, label = T, group.by = "ann_lvl_1_filtered") & NoAxes()
+DimPlot(tseur, reduction = paste0("umap.harmony.", reduction_name), pt.size = 0.1, label = T, group.by = "ann_lvl_2_Tcells") & NoAxes()
+
+
+myeseur <- readRDS(file = "03_processing/12_phase_5/data/Myeloid_seurat_annotated.rds")
+reduction_name <- "Myeloid"
+DimPlot(myeseur, reduction = paste0("umap.harmony.", reduction_name), pt.size = 0.1, label = T, group.by = "ann_lvl_1_filtered") & NoAxes()
+DimPlot(myeseur, reduction = paste0("umap.harmony.", reduction_name), pt.size = 0.1, label = T, group.by = "ann_lvl_2_Myeloids") & NoAxes()
+colnames(myeseur@meta.data)
+
+seurat_obj <- readRDS(file = "03_processing/11_phase_4/data/immune_subset_without_doubs_annotated.rds")
+reduction_name <- "immune_no_doub"
+DimPlot(seurat_obj, reduction = paste0("umap.harmony.", reduction_name), pt.size = 0.1, label = T, group.by = "ann_lvl_1") & NoAxes()
+```
+
+
+```{R Adding annotations to the two objects}
+### Low MT
+low_mt_tseur <- readRDS(file = "03_processing/13_phase_6/data/metabolic/low_mt_tseur.rds")
+DimPlot(low_mt_tseur, reduction = paste0("umap.harmony.", "low_mt"), group.by = "low_mt_annotation_specific", pt.size = 0.1, label = T) & NoAxes()
+cluster_names <- c("Proliferating_CD8_1a", "Tnaive", "Texterm_CD8", "Th_cells", "Teff_exh_CD8", "Teff_CD8", "Proliferating_CD4", "Tem_CD8", "Tregs_memory", "Proliferating_CD8_2a", "Tregs_CCR8", "GD_NKT_CD8", "Doublets", "Proliferating_CD8_gd", "NK", "IFN_response", "Tactive", "Bad-Quality")
+Idents(object = low_mt_tseur) <- "RNA_snn_res.1.5"
+Idents(low_mt_tseur) %>% levels()
+new.cluster.ids <- cluster_names
+names(new.cluster.ids) <- levels(low_mt_tseur)
+low_mt_tseur <- RenameIdents(low_mt_tseur, new.cluster.ids)
+low_mt_tseur[["low_mt_annotation_specific"]] <- Idents(low_mt_tseur)
+Idents(low_mt_tseur) %>% levels()
+
+dittoDimPlot(low_mt_tseur, reduction.use = paste0("umap.harmony.", "low_mt"), do.label = F, var = "low_mt_annotation_specific", split.by = "primary_sample") & NoAxes()
+
+
+### High MT
+high_mt_tseur <- readRDS(file = "03_processing/13_phase_6/data/metabolic/high_mt_tseur.rds")
+DimPlot(high_mt_tseur, reduction = paste0("umap.harmony.", "high_mt"), group.by = "RNA_snn_res.0.9", pt.size = 0.1, label = T) & NoAxes()
+high_mt_tseur@meta.data %>% colnames()
+cluster_names <- c("Bad-Quality", "Tnaive_b1", "Texh_CD8_b", "Tnaive_b2", "Proliferating_CD8_1b", "Tregs_b", "Bad-Quality", "Proliferating_CD8_2b", "Teff_CD8_b", "Bad-Quality")
+Idents(object = high_mt_tseur) <- "RNA_snn_res.0.9"
+Idents(high_mt_tseur) %>% levels()
+new.cluster.ids <- cluster_names
+names(new.cluster.ids) <- levels(high_mt_tseur)
+high_mt_tseur <- RenameIdents(high_mt_tseur, new.cluster.ids)
+high_mt_tseur[["high_mt_annotation_specific"]] <- Idents(high_mt_tseur)
+Idents(high_mt_tseur) %>% levels()
+dittoDimPlot(high_mt_tseur, reduction.use = paste0("umap.harmony.", "low_mt"), do.label = F, var = "high_mt_annotation_specific", split.by = "primary_sample") & NoAxes()
+```
+
+
+```{R adding the annotations to the metadata}
+low_mt_tseur@meta.data$mt_annotation <- low_mt_tseur@meta.data$low_mt_annotation_specific
+high_mt_tseur@meta.data$mt_annotation <- high_mt_tseur@meta.data$high_mt_annotation_specific
+cells_meta_trim_low <- subset(low_mt_tseur@meta.data, select = c("mt_annotation"))
+cells_meta_trim_high <- subset(high_mt_tseur@meta.data, select = c("mt_annotation"))
+
+meta_data_to_add <- NULL
+meta_data_to_add <- rbind(cells_meta_trim_low, cells_meta_trim_high)
+
+## Adding the data to the T-cell object
+tseur <- AddMetaData(tseur, meta_data_to_add)
+```
+
+```{R myeloid fraction}
+# myeseur <- readRDS( file ="03_processing/12_phase_5/data/Myeloid_seurat_annotated.rds")
+reduction_name <- "Myeloid"
+Idents(object = myeseur) <- "RNA_snn_res.0.5"
+new.cluster.ids <- c("Monocytes", "Macrophages", "Neutrophils", "Macrophage_OTOA", "Doublets", "CD1CA+_A", "Monocytic_MDSCs", "Microglia", "pDCs", "Macrophage_SPP1", "cDC1", "mregDCs")
+names(new.cluster.ids) <- levels(myeseur)
+myeseur <- RenameIdents(myeseur, new.cluster.ids)
+myeseur[["ann_lvl_2_Myeloids_final"]] <- Idents(myeseur)
+Idents(myeseur) %>% levels()
+DimPlot(myeseur, reduction = paste0("umap.harmony.", reduction_name), pt.size = 0.1, label = T, group.by = "ann_lvl_2_Myeloids_final") & NoAxes()
+```
+```{R combining both datasets}
+tseur@meta.data$ann_lvl_2 <- tseur@meta.data$mt_annotation
+myeseur@meta.data$ann_lvl_2 <- myeseur@meta.data$ann_lvl_2_Myeloids_final
+cells_meta_trim_t <- subset(tseur@meta.data, select = c("ann_lvl_2"))
+cells_meta_trim_m <- subset(myeseur@meta.data, select = c("ann_lvl_2"))
+meta_data_filtered <- subset(seurat_obj@meta.data, select = c("ann_lvl_1_filtered"))
+levels(meta_data_filtered$ann_lvl_1_filtered) <- c(levels(meta_data_filtered$ann_lvl_1_filtered), "Bad-Quality")
+meta_data_filtered$ann_lvl_1_filtered[meta_data_filtered$ann_lvl_1_filtered == "Bad-quality"] <- "Bad-Quality"
+
+remaining_cell_ann <- meta_data_filtered %>%
+    filter(ann_lvl_1_filtered %in% c("Bcells", "PlasmaCells", "Bad-Quality")) %>%
+    droplevels() # wrongly named-bad-quality
+remaining_cell_ann$ann_lvl_2 <- remaining_cell_ann$ann_lvl_1_filtered
+remaining_cell_ann$ann_lvl_1_filtered <- NULL
+
+meta_data_to_add <- NULL
+meta_data_to_add <- rbind(cells_meta_trim_t, cells_meta_trim_m)
+meta_data_to_add <- rbind(meta_data_to_add, remaining_cell_ann)
+seurat_obj <- AddMetaData(seurat_obj, meta_data_to_add)
+table(seurat_obj@meta.data$ann_lvl_2)
+
+
+Idents(seurat_obj) <- seurat_obj@meta.data$ann_lvl_2
+
+seurat_obj@meta.data$nCount_RNA_log <- log(seurat_obj@meta.data$nCount_RNA)
+seurat_obj@meta.data$nFeature_RNA_log <- log(seurat_obj@meta.data$nFeature_RNA)
+DimPlot(seurat_obj, reduction = paste0("umap.harmony.", "immune_no_doub"), pt.size = 0.1, label = T, group.by = "ann_lvl_2") & NoAxes()
+dittoDimPlot(seurat_obj, reduction.use = paste0("umap.harmony.", "immune_no_doub"), do.label = T, var = "ann_lvl_2") & NoAxes()
+
+
+
+level_order <- c(
+    "Bad-Quality", "Doublets",
+    "Tnaive_b1", "Texh_CD8_b", "Tnaive_b2", "Proliferating_CD8_1b", "Tregs_b", "Proliferating_CD8_2b", "Teff_CD8_b",
+    "Proliferating_CD8_1a", "Tnaive", "Texterm_CD8", "Th_cells", "Teff_exh_CD8", "Teff_CD8", "Proliferating_CD4", "Tem_CD8", "Tregs_memory", "Proliferating_CD8_2a", "Tregs_CCR8", "GD_NKT_CD8", "Proliferating_CD8_gd", "NK", "IFN_response", "Tactive",
+    "Monocytes", "Macrophages", "Neutrophils", "Macrophage_OTOA", "CD1CA+_A", "Monocytic_MDSCs", "Microglia", "pDCs", "Macrophage_SPP1", "cDC1", "mregDCs",
+    "PlasmaCells", "Bcells"
+)
+
+
+seurat_obj@meta.data$ann_lvl_2 <- factor(seurat_obj@meta.data$ann_lvl_2, levels = level_order)
+cluster_order <- match(levels(seurat_obj@meta.data[["ann_lvl_2"]]), metaLevels("ann_lvl_2", seurat_obj))
+saveRDS(seurat_obj, file = "03_processing/12_phase_5/data/seurat_ann_lvl_2_immune.rds")
+```
+
+
+
+#### Preparing for 22-04-2025 presentation
+
+```{R}
+plots <- VlnPlot(seurat_obj, features = c("percent_mt", "percent.rb", "nCount_RNA", "nCount_RNA_log", "nFeature_RNA", "nFeature_RNA_log", "doublet.score"), ncol = 2)
+# p[[1]] + theme(axis.text.x = element_text(angle = 45, hjust = 2, size = 4))
+plots_2 <- lapply(plots, function(p) {
+    p + theme(axis.text.x = element_text(angle = 60, hjust = 1, size = 10))
+})
+wrap_plots(plots_2, ncol = 2)
+# ggsave(paste0(output_figs,"vln_all_clusters.png"),width = 20, height = 20)
+level_order <- c(
+    "Bad-Quality", "Doublets",
+    "Tnaive_b1", "Texh_CD8_b", "Tnaive_b2", "Proliferating_CD8_1b", "Tregs_b", "Proliferating_CD8_2b", "Teff_CD8_b",
+    "Proliferating_CD8_1a", "Tnaive", "Texterm_CD8", "Th_cells", "Teff_exh_CD8", "Teff_CD8", "Proliferating_CD4", "Tem_CD8", "Tregs_memory", "Proliferating_CD8_2a", "Tregs_CCR8", "GD_NKT_CD8", "Proliferating_CD8_gd", "NK", "IFN_response", "Tactive",
+    "Monocytes", "Macrophages", "Neutrophils", "Macrophage_OTOA", "CD1CA+_A", "Monocytic_MDSCs", "Microglia", "pDCs", "Macrophage_SPP1", "cDC1", "mregDCs",
+    "PlasmaCells", "Bcells"
+)
+levels(seurat_obj) <- level_order
+
+plots <- VlnPlot(seurat_obj, cols = color_panel_1, features = c("percent_mt", "percent.rb", "nCount_RNA", "nCount_RNA_log", "nFeature_RNA", "nFeature_RNA_log", "doublet.score"), ncol = 2)
+plots_2 <- lapply(plots, function(p) {
+    p + theme(axis.text.x = element_text(angle = 60, hjust = 1, size = 10))
+})
+wrap_plots(plots_2, ncol = 2)
+# ggsave(paste0(output_figs,"vln_all_clusters_reorder.png"),width = 20, height = 20)
+```
+
+```{R}
+dittoDimPlot(seurat_obj, reduction.use = paste0("umap.harmony.", "immune_no_doub"), do.label = T, var = "ann_lvl_2") & NoAxes()
+# ggsave(file = paste0(output_figs, "total_ann_lvl_2_correct.png"), width = 15, height = 10)
+DimPlot(seurat_obj, reduction = paste0("umap.harmony.", "immune_no_doub"), pt.size = 0.1, label = T, group.by = "ann_lvl_2") & NoAxes()
+# ggsave(file = paste0(output_figs, "total_ann_lvl_2_correct_dimplot.png"), width = 15, height = 10)
+
+dittoDimPlot(seurat_obj, reduction.use = paste0("umap.harmony.", "immune_no_doub"), do.label = F, var = "ann_lvl_2", split.by = "primary_sample") & NoAxes()
+# ggsave(file = paste0(output_figs, "per_patient_dimplot.png"), width = 15, height = 10)
+
+level_order <- c(
+    "Bad-Quality", "Doublets",
+    "Tnaive_b1", "Texh_CD8_b", "Tnaive_b2", "Proliferating_CD8_1b", "Tregs_b", "Proliferating_CD8_2b", "Teff_CD8_b",
+    "Proliferating_CD8_1a", "Tnaive", "Texterm_CD8", "Th_cells", "Teff_exh_CD8", "Teff_CD8", "Proliferating_CD4", "Tem_CD8", "Tregs_memory", "Proliferating_CD8_2a", "Tregs_CCR8", "GD_NKT_CD8", "Proliferating_CD8_gd", "NK", "IFN_response", "Tactive",
+    "Monocytes", "Macrophages", "Neutrophils", "Macrophage_OTOA", "CD1CA+_A", "Monocytic_MDSCs", "Microglia", "pDCs", "Macrophage_SPP1", "cDC1", "mregDCs",
+    "PlasmaCells", "Bcells"
+)
+
+
+seurat_obj@meta.data$ann_lvl_2 <- factor(seurat_obj@meta.data$ann_lvl_2, levels = level_order)
+cluster_order <- match(levels(seurat_obj@meta.data[["ann_lvl_2"]]), metaLevels("ann_lvl_2", seurat_obj))
+dittoBarPlot(seurat_obj, var = "ann_lvl_2", group.by = "primary_sample", var.labels.reorder = cluster_order)
+
+# ggsave(file = paste0(output_figs, "barplot_per_patient.png"), width = 15, height = 10)
+dittoBarPlot(seurat_obj, var = "primary_sample", group.by = "ann_lvl_2", color.panel = nejm_colors, x.reorder = cluster_order)
+# ggsave(file = paste0(output_figs, "barplot_per_cluster.png"), width = 15, height = 10)
+
+dittoBarPlot(var = "primary_sample", object = seurat_obj, group.by = "ann_lvl_2", color.panel = nejm_colors, scale = "count", x.reorder = cluster_order)
+# ggsave(file = paste0(output_figs, "barplot_per_cluster_counts.png"), width = 15, height = 10)
+```
+
+
+```{R making the barplots}
+dittoBarPlot(seurat_obj, var = "ann_lvl_2", group.by = "primary_sample", color.panel = color_panel_1, var.labels.reorder = cluster_order)
+# ggsave(file = paste0(output_figs, "barplot_per_patient_new_colours.png"), width = 15, height = 10)
+
+dittoDimPlot(seurat_obj, reduction.use = paste0("umap.harmony.", "immune_no_doub"), do.label = T, color.panel = color_panel_1, var = "ann_lvl_2") & NoAxes()
+# ggsave(file = paste0(output_figs, "dimplot_total.png"), width = 15, height = 10)
+
+dittoDimPlot(seurat_obj, reduction.use = paste0("umap.harmony.", "immune_no_doub"), do.label = F, color.panel = color_panel_1, var = "ann_lvl_2", split.by = "primary_sample") & NoAxes()
+# ggsave(file = paste0(output_figs, "dimplot_per_patient.png"), width = 15, height = 10)
+```
+
+
+
+```{R verifying clusters}
+# Dimplot of general markers
+# Myeloid marker genes
+Mgenes <- c("PTPRC", "CD8A", "CD4", "VCAN", "CD14", "CD68", "CD163", "TREM2", "APOE", "CXCL10", "CD1C", "FCER1A", "CLEC10A", "S100A9", "S100A10", "S100A12", "P2RY12", "SLC2A5", "TMEM119", "LILRA4", "FTL", "FCGR3A", "CLEC9A", "CLNK", "CCR7", "LAMP3", "FSCN1", "OTOA", "SPP1")
+
+dot_markers <- DotPlot(seurat_obj, features = Mgenes, cluster.idents = TRUE) + RotatedAxis()
+# ggsave(dot_markers, file = paste0(output_figs, "Dotplot_Myeloids_annotated.png"),width = 20, height = 10)
+
+
+# T-cells marker genes
+Tgenes <- c("PTPRC", "CD8A", "CD8B", "CD4", "LAG3", "CX3CR1", "CCR7", "SELL", "NCAM1", "NKG7", "KLRB1", "FOXP3", "TOP2A", "MKI67", "PDCD1", "HAVCR2", "LYVE1", "TMEM119", "FCGR3A", "LILRA4", "MLANA")
+dot_markers <- DotPlot(seurat_obj, features = Tgenes, cluster.idents = TRUE) + RotatedAxis()
+
+# ggsave(dot_markers, file = paste0(output_figs, "Dotplot_tgenes_annotated.png"), width = 15, height = 10)
+
+
+combined <- DotPlot(seurat_obj, features = unique(c(Mgenes, Tgenes)), cluster.idents = TRUE) + RotatedAxis()
+ggsave(combined, file = paste0(output_figs, "Dotplot_combined_annotated.png"), width = 15, height = 10)
+```
+### Regressing out the mitochondrial percent in the scaled data
+
+
+```{R }
+# Regress out mitochondrial
+
+
+output_figs <- paste0(output_figs, "regress/")
+# marrow <- ScaleData(marrow, vars.to.regress = c("percent_mt"), features = rownames(marrow))
+reduction_name <- "Tcell_regressed"
+tseur[["RNA"]] <- split(tseur[["RNA"]], f = tseur$sample)
+tseur <- FindVariableFeatures(tseur, selection.method = "vst", nfeatures = 2000, verbose = TRUE)
+hvf_info <- HVFInfo(tseur)
+top_variable_genes <- hvseurat_objf_info[order(hvf_info$variance.standardized, decreasing = TRUE), ]
+top_2000_genes <- rownames(top_variable_genes)[1:2000]
+VariableFeatures(tseur) <- top_2000_genes
+# all.genes <- rownames(tseur)
+tseur <- ScaleData(object = tseur, vars.to.regress = c("percent_mt"), features = top_2000_genes, verbose = TRUE)
+tseur <- RunPCA(
+    object = tseur, nfeatures.print = 5, ndims.print = 1:2, reduction.name = paste0("pca_", reduction_name)
+)
+
+ElbowPlot(tseur, reduction = paste0("pca_", reduction_name), ndims = 50)
+VizDimLoadings(tseur, dims = 1:5, reduction = paste0("pca_", reduction_name), nfeatures = 15)
+
+
+tseur <- IntegrateLayers(
+    object = tseur, method = HarmonyIntegration,
+    orig.reduction = paste0("pca_", reduction_name), new.reduction = paste0("harmony_pca.", reduction_name),
+    verbose = TRUE
+)
+res_values <- c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.5)
+tseur <- FindNeighbors(tseur, reduction = paste0("harmony_pca.", reduction_name), dims = 1:25)
+tseur <- FindClusters(tseur, resolution = res_values, algorithm = 4)
+tseur <- RunUMAP(tseur, reduction = paste0("harmony_pca.", reduction_name), dims = 1:25, reduction.name = paste0("umap.harmony.", reduction_name))
+Running_plots_post_harmony(tseur, reduction_name)
+tseur <- JoinLayers(tseur)
+DimPlot(
+    object = tseur,
+    reduction = paste0("umap.harmony.", reduction_name),
+    pt.size = 0.1,
+    group.by = "ann_lvl_1_filtered",
+    label = TRUE
+) &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+
+tseur@meta.data %>% colnames()
+```
+
+```{R run lisi}
+ndims <- 25
+lisi_running <- function(seurat_obj, reduction_name, ndims, batch_col) {
+    Embeddings(seurat_obj, reduction = paste0("harmony_pca.", reduction_name))[, 1:ndims] %>% compute_lisi(, meta_data = seurat_obj@meta.data, label_colnames = c(batch_col)) -> lis
+    Embeddings(seurat_obj, reduction = paste0("pca_", reduction_name))[, 1:ndims] %>% compute_lisi(, meta_data = seurat_obj@meta.data, label_colnames = c(batch_col)) -> lis_no_int
+    lis_no_int$integrated <- "no"
+    lis$integrated <- "yes"
+    combined <- rbind(lis_no_int, lis)
+    t.test(sample ~ integrated, data = combined) -> test_result
+    plot <- ggplot(combined, mapping = aes(x = integrated, y = sample)) +
+        geom_boxplot() +
+        theme_minimal() & labs(title = paste0("Lisi score pre and post integration with a significand t-test statistic: ", round(test_result$statistic, 2)))
+    ggsave(plot, filename = paste0(output_figs, "Lisi_samples_", reduction_name, ".png"))
+    return(plot)
+}
+```
+
+```{R}
+plot <- lisi_running(tseur, reduction_name, ndims = 25, batch_col = "sample")
+DimPlot(
+    object = tseur,
+    reduction = paste0("umap.harmony.", reduction_name),
+    pt.size = 0.1,
+    group.by = "mt_annotation",
+    label = TRUE
+) &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+
+
+
+dittoDimPlot(tseur, reduction.use = paste0("umap.harmony.", "Tcell_regressed"), color.panel = color_panel_1, do.label = T, var = "mt_annotation") & NoAxes()
+
+ggsave(file = paste0(output_figs, "regressedout_previous_anno.png"), width = 15, height = 10)
+```
+
+### Running regression without bad-quality
+
+```{R }
+seurat_obj <- readRDS(file = "03_processing/12_phase_5/data/seurat_ann_lvl_2_immune.rds")
+reduction_name <- "mitoregress"
+output_figs <- "03_processing/14_phase_7/figs/"
+
+all_tcells_good <- c("Tnaive_b1", "Texh_CD8_b", "Tnaive_b2", "Proliferating_CD8_1b", "Tregs_b", "Proliferating_CD8_2b", "Teff_CD8_b", "Proliferating_CD8_1a", "Tnaive", "Texterm_CD8", "Th_cells", "Teff_exh_CD8", "Teff_CD8", "Proliferating_CD4", "Tem_CD8", "Tregs_memory", "Proliferating_CD8_2a", "Tregs_CCR8", "GD_NKT_CD8", "Proliferating_CD8_gd", "NK", "IFN_response", "Tactive")
+unique(Idents(seurat_obj))
+tcell_good <- subset(x = seurat_obj, idents = all_tcells_good, invert = F)
+output_figs <- paste0(output_figs, "regress/regress_2/")
+# marrow <- ScaleData(marrow, vars.to.regress = c("percent_mt"), features = rownames(marrow))
+tcell_good[["RNA"]] <- split(tcell_good[["RNA"]], f = tcell_good$sample)
+tcell_good <- FindVariableFeatures(tcell_good, selection.method = "vst", nfeatures = 2000, verbose = TRUE)
+hvf_info <- HVFInfo(tcell_good)
+top_variable_genes <- hvf_info[order(hvf_info$variance.standardized, decreasing = TRUE), ]
+top_2000_genes <- rownames(top_variable_genes)[1:2000]
+VariableFeatures(tcell_good) <- top_2000_genes
+# all.genes <- rownames(tcell_good)
+tcell_good <- ScaleData(object = tcell_good, vars.to.regress = c("percent_mt"), features = top_2000_genes, verbose = TRUE)
+tcell_good <- RunPCA(
+    object = tcell_good, nfeatures.print = 5, ndims.print = 1:2, reduction.name = paste0("pca_", reduction_name)
+)
+
+ElbowPlot(tcell_good, reduction = paste0("pca_", reduction_name), ndims = 100)
+VizDimLoadings(tcell_good, dims = 1:5, reduction = paste0("pca_", reduction_name), nfeatures = 15)
+
+
+tcell_good <- IntegrateLayers(
+    object = tcell_good, method = HarmonyIntegration,
+    orig.reduction = paste0("pca_", reduction_name), new.reduction = paste0("harmony_pca.", reduction_name),
+    verbose = TRUE
+)
+res_values <- c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.5)
+tcell_good <- FindNeighbors(tcell_good, reduction = paste0("harmony_pca.", reduction_name), dims = 1:25)
+tcell_good <- FindClusters(tcell_good, resolution = res_values, algorithm = 4)
+tcell_good <- RunUMAP(tcell_good, reduction = paste0("harmony_pca.", reduction_name), dims = 1:25, reduction.name = paste0("umap.harmony.", reduction_name))
+# Running_plots_post_harmony(tcell_good, reduction_name)
+tcell_good <- JoinLayers(tcell_good)
+
+
+saveRDS(tcell_good, file = paste0("03_processing/14_phase_7/data/regressed_tcells.rds"))
+```
+
+
+
+### All of this is random analysis, you can ignore:
+
+
+
+```{R}
+celltypes <- c("Tnaive_b1", "Texh_CD8_b", "Tnaive_b2", "Proliferating_CD8_1b", "Tregs_b", "Proliferating_CD8_2b", "Teff_CD8_b")
+celltypes_2 <- c("Proliferating_CD8_1a", "Tnaive", "Texterm_CD8", "Th_cells", "Teff_exh_CD8", "Teff_CD8", "Proliferating_CD4", "Tem_CD8", "Tregs_memory", "Proliferating_CD8_2a", "Tregs_CCR8", "GD_NKT_CD8", "Proliferating_CD8_gd", "NK", "IFN_response", "Tactive")
+
+tcell_good@meta.data <- tcell_good@meta.data %>%
+    mutate(cells_of_interest = case_when(
+        ann_lvl_2 %in% celltypes ~ "High_mt",
+        ann_lvl_2 %in% celltypes_2 ~ "low_mt",
+        TRUE ~ "Other"
+    ))
+
+
+table(tcell_good@meta.data$cells_of_interest)
+Idents(tcell_good) <- "cells_of_interest"
+
+marker_list <- FindAllMarkers(
+    object = tcell_good,
+    # ident.1 = "High_mt", ident.2 = "low_mt",
+    only.pos = F,
+    min.pct = 0.25,
+    logfc.threshold = 0.25
+)
+excel_sheet(marker_list, output_excel, "high_low_mt_regressed_tcells")
+DimPlot(
+    object = tcell_good,
+    reduction = paste0("umap.harmony.", reduction_name),
+    pt.size = 0.1,
+    label = TRUE
+) &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+
+ggsave(paste0(output_figs, "/dimplot_groups.png"))
+
+FeaturePlot(
+    object = tcell_good,
+    reduction = paste0("umap.harmony.", reduction_name),
+    pt.size = 0.1,
+    features = c("XYLT1", "ANK3", "ZNF407", "CXCL13", "SLC25A5", "S100A4"), order = TRUE
+) & NoAxes()
+ggsave(paste0(output_figs, "/feature_plot_markers_specific.png"))
+DimPlot(
+    object = tcell_good,
+    reduction = paste0("umap.harmony.", reduction_name),
+    pt.size = 0.1,
+    cols = color_panel_1,
+    group.by = "ann_lvl_2",
+    label = TRUE
+) &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+
+ggsave(paste0(output_figs, "/dimplot_pre_annotation.png"))
+
+Tgenes <- c("PTPRC", "CD8A", "CD8B", "CD4", "LAG3", "CX3CR1", "CCR7", "SELL", "NCAM1", "NKG7", "KLRB1", "FOXP3", "TOP2A", "MKI67", "PDCD1", "HAVCR2", "LYVE1", "TMEM119", "FCGR3A", "LILRA4", "MLANA")
+dot_markers <- DotPlot(tcell_good, features = Tgenes, cluster.idents = TRUE) + RotatedAxis()
+ggsave(dot_markers, file = paste0(output_figs, "Dotplot_high_low_markers.png"), width = 15, height = 10)
+
+Idents(tcell_good) <- "ann_lvl_2"
+
+Tgenes <- c("PTPRC", "CD8A", "CD8B", "CD4", "LAG3", "CX3CR1", "CCR7", "SELL", "NCAM1", "NKG7", "KLRB1", "FOXP3", "TOP2A", "MKI67", "PDCD1", "HAVCR2", "LYVE1", "TMEM119", "FCGR3A", "LILRA4", "MLANA")
+dot_markers <- DotPlot(tcell_good, features = Tgenes, cluster.idents = TRUE) + RotatedAxis()
+ggsave(dot_markers, file = paste0(output_figs, "dotplot_annotation_markers_specific.png"), width = 15, height = 10)
+
+# marker_list %>%
+#     arrange(desc(abs(avg_log2FC))) %>%
+#     dplyr::select(pct.1, pct.2, p_val, p_val_adj, avg_log2FC) %>%
+#     head(, n = 10)
+
+# volcano_plot <- volcano_plotting(marker_list, ident.1 = "Melanoma high mt cells", ident.2 = "Other high mt cells")
+# volcano_plot
+
+
+# ggsave(paste0(output_figs, "/feature_plot_top_volcano.png"))
+```
+
+
+```{R}
+celltypes <- c("Tnaive_b1", "Texh_CD8_b", "Tnaive_b2", "Proliferating_CD8_1b", "Tregs_b", "Proliferating_CD8_2b", "Teff_CD8_b")
+celltypes_2 <- c("Proliferating_CD8_1a", "Tnaive", "Texterm_CD8", "Th_cells", "Teff_exh_CD8", "Teff_CD8", "Proliferating_CD4", "Tem_CD8", "Tregs_memory", "Proliferating_CD8_2a", "Tregs_CCR8", "GD_NKT_CD8", "Proliferating_CD8_gd", "NK", "IFN_response", "Tactive")
+
+# pseudobulking on the good/bad tcells
+tcell_good <- readRDS(file = paste0("03_processing/14_phase_7/data/regressed_tcells.rds"))
+tcell_good@meta.data %>% colnames()
+pseudo_ifnb <- AggregateExpression(tcell_good, assays = "RNA", return.seurat = T, group.by = c("sample", "cells_of_interest"))
+# each 'cell' is a donor-condition-celltype pseudobulk profile
+tail(Cells(pseudo_ifnb))
+
+Idents(pseudo_ifnb) <- "cells_of_interest"
+
+bulk.mono.de <- FindMarkers(
+    object = pseudo_ifnb,
+    ident.1 = "High-mt",
+    ident.2 = "low-mt",
+    min.pct = 0.25,
+    logfc.threshold = 0.25
+)
+head(bulk.mono.de, n = 15)
+
+Idents(tcell_good) <- "cells_of_interest"
+mono.de <- FindMarkers(
+    object = tcell_good,
+    ident.1 = "High_mt", ident.2 = "low_mt",
+    only.pos = F,
+    min.pct = 0.25,
+    logfc.threshold = 0.25
+)
+
+
+# volcano_plot <- volcano_plotting(marker_list, ident.1 = "Melanoma high mt cells", ident.2 = "Other high mt cells")
+```
+
+```{R}
+names(bulk.mono.de) <- paste0(names(bulk.mono.de), ".bulk")
+bulk.mono.de$gene <- rownames(bulk.mono.de)
+
+names(mono.de) <- paste0(names(mono.de), ".sc")
+mono.de$gene <- rownames(mono.de)
+
+merge_dat <- merge(mono.de, bulk.mono.de, by = "gene")
+merge_dat <- merge_dat[order(merge_dat$p_val.bulk), ]
+
+# Number of genes that are marginally significant in both; marginally significant only in bulk; and marginally significant only in single-cell
+common <- merge_dat$gene[which(merge_dat$p_val.bulk < 0.05 &
+    merge_dat$p_val.sc < 0.05)]
+only_sc <- merge_dat$gene[which(merge_dat$p_val.bulk > 0.05 &
+    merge_dat$p_val.sc < 0.05)]
+only_bulk <- merge_dat$gene[which(merge_dat$p_val.bulk < 0.05 &
+    merge_dat$p_val.sc > 0.05)]
+print(paste0("# Common: ", length(common)))
+```
+
+```{R}
+print(paste0("# Common: ", length(common)))
+print(paste0("# Only in single-cell: ", length(only_sc)))
+print(paste0("# Only in bulk: ", length(only_bulk)))
+```
+
+```{R}
+Idents(pseudo_ifnb) <- "cells_of_interest"
+
+bulk.mono.de <- FindMarkers(
+    object = pseudo_ifnb,
+    ident.1 = "High-mt",
+    ident.2 = "low-mt"
+    # min.pct = 0.25,
+    # logfc.threshold = 0.25
+)
+head(bulk.mono.de, n = 15)
+
+
+bulk.mono.de %>%
+    arrange(desc(abs(avg_log2FC))) %>%
+    head(, n = 10)
+
+
+hist(bulk.mono.de$p_val)
+volcano_plot <- volcano_plotting(bulk.mono.de, ident.1 = "high mt cells", ident.2 = "high mt cells")
+
+ggsave(filename = "03_processing/14_phase_7/figs/feature_analysis/volcano_plots/high_low_pseudobulking_analysis.png")
+```
+
+```{R}
+volcano_plotting <- function(marker_list, ident.1 = "", ident.2 = "") {
+    marker_list$genes <- row.names(marker_list)
+    marker_list$diffexpressed <- "NO"
+    marker_list$diffexpressed[marker_list$avg_log2FC > 1.5 & marker_list$p_val < 0.05] <- "UP"
+    marker_list$diffexpressed[marker_list$avg_log2FC < -1.5 & marker_list$p_val < 0.05] <- "DOWN"
+    marker_list$diffexpressed[marker_list$avg_log2FC > 1.5 & marker_list$p_val < 0.05] <- "UP"
+    marker_list$diffexpressed[marker_list$avg_log2FC < -1.5 & marker_list$p_val < 0.05] <- "DOWN"
+    # marker_list$delabel <- NA
+    # marker_list$delabel[marker_list$diffexpressed != "NO"] <- row.names(marker_list)[marker_list$diffexpressed != "NO"]
+
+    marker_list$delabel <- NA
+    marker_list$delabel[marker_list$diffexpressed != "NO"] <- row.names(marker_list)[marker_list$diffexpressed != "NO"]
+    marker_list %>%
+        arrange(desc(avg_log2FC)) %>%
+        dplyr::select(avg_log2FC) %>%
+        head(, n = 15) %>%
+        row.names() -> labels_1
+    marker_list %>%
+        arrange(avg_log2FC) %>%
+        dplyr::select(avg_log2FC) %>%
+        head(, n = 15) %>%
+        row.names() -> labels_2
+    labels <- c(labels_1, labels_2)
+    marker_list$delabel <- NA
+    marker_list$delabel[marker_list$genes %in% labels] <- marker_list$genes[marker_list$genes %in% labels]
+    min_above <- min(marker_list$p_val[marker_list$p_val > 0])
+    marker_list$p_val <- ifelse(marker_list$p_val == 0, min_above, marker_list$p_val)
+    volcano_plot <- ggplot(data = marker_list, aes(x = avg_log2FC, y = -log10(p_val), col = diffexpressed, label = delabel)) +
+        geom_point() +
+        geom_text_repel(max.overlaps = Inf) +
+        scale_color_manual(values = c("blue", "black", "red")) +
+        geom_vline(xintercept = c(-1.5, 1.5), col = "red") +
+        geom_hline(yintercept = -log10(0.05), col = "red") & labs(title = paste0("Comparing: ", ident.1, " versus the ", ident.2))
+    return(volcano_plot)
+}
+```
+
+
+```{R}
+# devtools::install_github("immunogenomics/presto")
+library(writexl)
+excel_sheet <- function(markers, output_dir, name) {
+    library(writexl)
+    print(paste0("Output will be put in: ", output_dir, name, ".xlsx"))
+    if (file.exists(output_dir)) {
+        markers %>%
+            arrange(cluster, desc(avg_log2FC)) %>% # Arrange within each cluster
+            group_by(cluster) %>%
+            select(cluster, pct.1, pct.2, p_val, p_val_adj, avg_log2FC, gene) %>%
+            group_split() %>% # Split into list by 'cluster'
+            setNames(unique(markers$cluster)) %>% # Name list elements
+            writexl::write_xlsx(paste0(output_dir, name, ".xlsx"))
+    } else {
+        stop("Directory does not exist")
+    }
+}
+output_excel <- "03_processing/14_phase_7/data/regress_excel/"
+```
+```{R }
+library(DOSE)
+
+
+marker_list <- FindMarkers(
+    object = seurat_obj,
+    ident.1 = "High_mt", ident.2 = "low_mt",
+    only.pos = F,
+    min.pct = 0,
+    logfc.threshold = 0
+)
+marker_list$genes <- row.names(marker_list)
+marker_list %>%
+    arrange(desc((avg_log2FC))) %>%
+    dplyr::select(avg_log2FC) -> fold_change
+gene_list <- fold_change$avg_log2FC
+names(gene_list) <- row.names(fold_change)
+gene <- names(gene_list)[abs(gene_list) > 2]
+
+
+gse <- gseGO(
+    geneList = gene_list,
+    ont = "ALL",
+    keyType = "SYMBOL",
+    minGSSize = 3,
+    maxGSSize = 800,
+    pvalueCutoff = 0.05,
+    verbose = TRUE,
+    pAdjustMethod = "none",
+    OrgDb = org.Hs.eg.db, eps = 0
+)
+
+gseaplot(gse, by = "all", title = gse$Description[1], geneSetID = 1)
+```
+p <- multi_dittoPlot(tseur, var = c("percent_mt","doublet.score","percent.rb","nFeature_RNA","nCount_RNA"), group.by = "ann_lvl_2_Tcells_specific", plots = c("vlnplot","jitter")
+,list.out = TRUE)
+
+g <- do.call(grid.arrange,p)
+ggsave(filename = paste0(output_figs,"violin_of_stats.png"),g)
+
+g <- VlnPlot(tseur, features = c("percent_mt","doublet.score","percent.rb","nFeature_RNA","nCount_RNA"), group.by = "ann_lvl_2_Tcells_specific")
+ggsave(filename = paste0(output_figs,"violin_of_stats.png"),g, width = 15, height = 15)

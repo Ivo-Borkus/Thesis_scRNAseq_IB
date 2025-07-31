@@ -1,0 +1,59 @@
+
+
+# Doubletfinder analysis on processed data
+
+```{R starting point, eval = FALSE}
+seurat_obj <- readRDS(file = paste0(here(), "/03_processing/06_Clustering/data/subsets/", sample, "_clusters.rds"))
+```
+
+```{R Determining DF paramaters}
+sweep_seurat <- paramSweep(seurat_obj, PCs = 1:10, sct = FALSE)
+sweep_stats_seurat <- summarizeSweep(sweep_seurat, GT = FALSE)
+
+# mean-variance-normalized bimodality coefficient
+bcmvn_seurat <- find.pK(sweep_stats_seurat)
+bcmvn_seurat$pK <- as.numeric(as.character(bcmvn_seurat$pK))
+BCmetric <- bcmvn_seurat$BCmetric
+pK_choose <- bcmvn_seurat$pK[which(BCmetric %in% max(BCmetric))]
+
+pk_optimisation_plot <- ggplot(bcmvn_seurat, aes(x = pK, y = BCmetric)) +
+    geom_point(color = "blue") +
+    geom_line(color = "black") +
+    geom_vline(xintercept = pK_choose, linetype = "dashed", color = "red", linewidth = 1) +
+    ggtitle("The BCmvn distributions") +
+    annotate("text", x = pK_choose, y = max(BCmetric), label = as.character(pK_choose), color = "red", hjust = -0.1)
+
+homotyp <- modelHomotypic(Idents(seurat_obj)) ## ex: annotations <- seu_kidney@meta.data$ClusteringResults
+nExp_poi <- round(0.075 * nrow(seurat_obj@meta.data)) ## Assuming 7.5% doublet formation rate - tailor for your dataset
+nExp_poi.adj <- round(nExp_poi * (homotyp))
+```
+
+
+
+```{R running doublet finder}
+seurat_obj <- doubletFinder(seurat_obj, PCs = 1:10, pN = 0.25, pK = pK_choose, nExp = nExp_poi, reuse.pANN = FALSE, sct = FALSE)
+seurat_obj <- doubletFinder(seurat_obj, PCs = 1:10, pN = 0.25, pK = pK_choose, nExp = nExp_poi.adj, reuse.pANN = FALSE, sct = FALSE)
+saveRDS(seurat_obj, file = paste0("03_processing/01_QC/data/subsets/Doublet_finder/", sample, ".rds"))
+```
+
+
+```{R umap feature plots}
+Feature_mt_umap <- FeaturePlot(seurat_obj, features = "percent_mt", reduction = "umap.unintegrated", pt.size = 0.1) & NoAxes()
+Feature_count_umap <- FeaturePlot(seurat_obj, features = "nCount_RNA", reduction = "umap.unintegrated", pt.size = 0.1) & NoAxes()
+doublet_score_plot <- FeaturePlot(seurat_obj, features = "doublet.score", pt.size = 0.1) & NoAxes() & labs(title = "Scrublet scores")
+doublet_finder_score <- FeaturePlot(seurat_obj, features = paste0("pANN_0.25_", pK_choose, "_", nExp_poi.adj), pt.size = 0.1) & NoAxes() & labs(title = "Doublet finder score")
+classifications_string <- DimPlot(seurat_obj, group.by = paste0("DF.classifications_0.25_", pK_choose, "_", nExp_poi), pt.size = 0.1) & NoAxes() & labs(title = "Doublet finder classification naive")
+classifications_lenient <- DimPlot(seurat_obj, group.by = paste0("DF.classifications_0.25_", pK_choose, "_", nExp_poi.adj), pt.size = 0.1) & NoAxes() & labs(title = "Doublet finder classification adjusted")
+```
+
+```{R Plotting doublet_finder, fig.align="center", echo = FALSE,fig.width=10,fig.height=10, include  = TRUE}
+grid.arrange(
+    Feature_mt_umap,
+    Feature_count_umap,
+    doublet_score_plot,
+    doublet_finder_score,
+    classifications_string,
+    classifications_lenient,
+    nrow = 3, ncol = 2
+)
+```

@@ -1,0 +1,218 @@
+
+---
+title: "Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 1
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/QC_per_sample/sample_5.rmd")
+```
+
+```{R loading data, echo = FALSE, message = FALSE}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+seurat_obj <- readRDS(here("03_processing/01_QC/data/merged_seurat_obj.RDS"))
+nejm_colors <- paletteer::paletteer_d(
+    "ggsci::default_nejm", length(levels(as.factor(meta_data$sample_name)))
+)
+names(nejm_colors) <- levels(meta_data$sample_name)
+seurat_obj[["percent_mt"]] <- PercentageFeatureSet(seurat_obj, pattern = "^MT-")
+obj.list <- SplitObject(seurat_obj, split.by = "sample")
+```
+
+# Parameters
+
+```{R Parameters, echo = TRUE}
+sample <- "105946-002-002"
+minUMI <- 500
+maxUMI <- NA
+minfeat <- 300
+maxfeat <- 10000
+maxmt <- 20
+```
+
+
+```{R Analysis of each sample seperately, echo = FALSE, include = FALSE}
+index <- match(sample, meta_data$sample_name)
+seurat_obj <- obj.list[[sample]]
+
+maxUMI <- max(seurat_obj@meta.data$nCount_RNA)
+minUMI <- ifelse(minUMI > min(seurat_obj@meta.data$nCount_RNA),
+    minUMI, min(seurat_obj@meta.data$nCount_RNA)
+)
+minfeat <- ifelse(minfeat > min(seurat_obj@meta.data$nFeature_RNA),
+    minfeat, min(seurat_obj@meta.data$nFeature_RNA)
+)
+
+
+qc_count_line <- VlnPlot(seurat_obj,
+    features = c("nCount_RNA"),
+    log = FALSE,
+    cols = nejm_colors[index],
+    pt.size = 0
+) & geom_hline(yintercept = minUMI, color = "red") &
+    geom_hline(yintercept = maxUMI, color = "red") &
+    NoLegend() &
+    theme(axis.text.x = element_blank(), plot.title = element_blank())
+
+
+qc_feature_line <- VlnPlot(seurat_obj,
+    features = c("nFeature_RNA"),
+    log = FALSE,
+    cols = nejm_colors[index],
+    pt.size = 0
+) + theme(axis.text.x = element_blank(), plot.title = element_blank()) +
+    geom_hline(yintercept = minfeat, color = "red") +
+    geom_hline(yintercept = maxfeat, color = "red") &
+    NoLegend()
+
+qc_mt_line <- VlnPlot(seurat_obj,
+    features = c("percent_mt"),
+    log = FALSE,
+    cols = nejm_colors[index],
+    pt.size = 0
+) + theme(axis.text.x = element_blank(), plot.title = element_blank()) +
+    geom_hline(yintercept = maxmt, color = "red") &
+    NoLegend()
+```
+
+```{R Histogram plots, echo = FALSE, include=FALSE}
+hist_count_line <- ggplot(
+    data = seurat_obj@meta.data,
+    mapping = aes(x = nCount_RNA)
+) +
+    geom_density(fill = nejm_colors[index]) +
+    labs(title = "Distribution of of UMI count in cells") +
+    geom_vline(xintercept = minUMI, color = "red") +
+    geom_vline(xintercept = maxUMI, color = "red") +
+    theme_minimal() +
+    scale_x_log10()
+
+hist_feat_line <- ggplot(
+    data = seurat_obj@meta.data,
+    mapping = aes(x = nFeature_RNA)
+) +
+    geom_density(fill = nejm_colors[index]) +
+    labs(title = "Distribution of unique genes in cells") +
+    geom_vline(xintercept = minfeat, color = "red") +
+    geom_vline(xintercept = maxfeat, color = "red") +
+    theme_minimal() +
+    scale_x_log10()
+
+hist_mt_line <- ggplot(
+    data = seurat_obj@meta.data,
+    mapping = aes(x = percent_mt)
+) +
+    geom_density(fill = nejm_colors[index]) +
+    labs(title = "Distribution of MT percentage in cells") +
+    geom_vline(xintercept = maxmt, color = "red") +
+    theme_minimal() +
+    scale_x_log10()
+```
+
+```{R Scatter plots, include = FALSE}
+umi_v_mt_lines <- ggplot(
+    data = seurat_obj@meta.data,
+    mapping = aes(x = nCount_RNA, y = percent_mt)
+) +
+    geom_point() +
+    geom_hline(yintercept = maxmt, color = "red") +
+    geom_vline(xintercept = minUMI, color = "red") +
+    geom_vline(xintercept = maxUMI, color = "red") +
+    scale_x_log10() +
+    labs(
+        x = "UMI count", y = "Mitochondrial %"
+    )
+
+
+
+umi_v_genes_mt_col <- ggplot(
+    data = seurat_obj@meta.data,
+    mapping = aes(
+        x = nCount_RNA, y = nFeature_RNA,
+        color = percent_mt,
+        size = percent_mt
+    )
+) +
+    geom_point() +
+    geom_hline(yintercept = minfeat, color = "red") +
+    geom_hline(yintercept = maxfeat, color = "red") +
+    geom_vline(xintercept = minUMI, color = "red") +
+    geom_vline(xintercept = maxUMI, color = "red") +
+    scale_x_log10() +
+    scale_y_log10() +
+    labs(
+        x = "UMI count", y = "Unique genes"
+    )
+```
+
+# Sample: "105946-002-002"
+```{R plotting_1, fig.align="center", echo = FALSE,fig.width=10,fig.height=10, message  = FALSE}
+grid.arrange(hist_count_line, qc_count_line,
+    hist_feat_line, qc_feature_line,
+    hist_mt_line, qc_mt_line,
+    umi_v_mt_lines, umi_v_genes_mt_col,
+    ncol = 2, nrow = 4
+)
+```
+
+
+```{R Subsetting, echo = FALSE}
+total_cells <- dim(seurat_obj)[2]
+
+seurat_obj <- subset(
+    seurat_obj,
+    nCount_RNA > minUMI &
+        nCount_RNA < maxUMI &
+        nFeature_RNA > minfeat &
+        nFeature_RNA < maxfeat &
+        percent_mt < maxmt
+)
+
+subset_cells <- dim(seurat_obj)[2]
+data_removed <- 100 - ((subset_cells / total_cells) * 100)
+
+###
+
+cat(paste0("Total amount of cells: ", total_cells, "\n"))
+cat(paste0("Percentage of data removed: ", round(data_removed, 2), "%", "\n"))
+cat(paste0("Amount of cells removed: ", total_cells - subset_cells, "\n"))
+cat(paste0("Cells remaining: ", subset_cells))
+```
+
+# Scatter Plots
+
+```{R plotting_2, fig.align="center", echo = FALSE,fig.width=10,fig.height=10, message  = FALSE}
+umi_v_genes_mt_col + labs(title = paste0("Sample: ", sample, " UMI count vs MT percentage"))
+```
+
+```{R plotting_3, fig.align="center", echo = FALSE,fig.width=10,fig.height=10, message  = FALSE}
+umi_v_mt_lines + labs(title = paste0("Sample: ", sample, " UMI count vs unique gene count in cells"))
+```
+
+
+```{R saving seurat}
+saveRDS(seurat_obj, file = "03_processing/01_QC/data/subsets/105946-002-002.RDS")
+```

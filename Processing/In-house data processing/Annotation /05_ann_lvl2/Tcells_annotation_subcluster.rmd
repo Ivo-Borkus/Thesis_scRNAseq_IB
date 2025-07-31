@@ -1,0 +1,110 @@
+# Tomorrow,
+###  1. Check with Juan the markers of the objects to really confirm my findings.
+###  2. Overlap all of the previous annotations in the bigger objects.
+###  3. Compare the findings of annotation with the results in wetlab, do things correlate with the values found?
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+# install.packages("languageserver")
+```
+
+```{R general functions, eval =T}
+library(here)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+output_figs <- "03_processing/13_phase_6/figs/tcells_stress/"
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+source("02_scripts/04_integration/functions.R")
+source("02_scripts/06_analysing_annotations/utils.R")
+library(dittoSeq)
+library(UCell)
+
+```
+```{R saving object,eval = T}
+tseur <- readRDS( file = "03_processing/12_phase_5/data/Tcell_seurat_annotated.rds")
+reduction_name <- "Tcell"
+
+Idents(object = tseur) <- "RNA_snn_res.0.9"# Order is messed up, so the order of sizes does not correspond
+# new.cluster.ids <- c("Exhausted_CD8", "Tcells_CD8", "Bad-Quality", "Unknown", "Unknown", "Proliferative_1", "Tcells_CD4", "Tcells_Naive", "Tregs", "Tregs_2", "NKs")
+new.cluster.ids <- c("Exhausted_CD8", "Proliferating_CD8", "Tcells_CD8", "Unknown", "Unknown", "Proliferative_Tcells", "Tcells_CD4_Naive", "Unknown", "Tregs", "Tcells_CD4", "Tcells_CD4_proliferating","Tregs_2","NK")
+new.cluster.ids_2 <- c("Exhausted_CD8", "Proliferating_CD8", "Tcells_CD8", "Unknown_1", "Unknown_2", "Proliferative_Tcells", "Tcells_CD4_Naive", "Unknown_3", "Tregs", "Tcells_CD4", "Tcells_CD4_proliferating","Tregs_2","NK")
+names(new.cluster.ids_2) <- levels(tseur)
+tseur <- RenameIdents(tseur, new.cluster.ids_2 )
+tseur[["ann_lvl_2_Tcells_specific"]] <- Idents(tseur)
+Idents(object = tseur) <- "RNA_snn_res.0.9"
+names(new.cluster.ids) <- levels(tseur)
+tseur <- RenameIdents(tseur, new.cluster.ids)
+tseur[["ann_lvl_2_Tcells"]] <- Idents(tseur)
+DimPlot(tseur, reduction = paste0("umap.harmony.",reduction_name),pt.size = 0.1, label = T, group.by = "ann_lvl_1_filtered") & NoAxes()
+DimPlot(tseur, reduction = paste0("umap.harmony.",reduction_name),pt.size = 0.1, label = T, group.by = "ann_lvl_2_Tcells") & NoAxes()
+```
+
+
+
+```{R subclustering all proliferative regions}
+Idents(object = tseur) <- "RNA_snn_res.0.9"
+new.cluster.ids_3 <- c("Exhausted_CD8", "Proliferating", "Tcells_CD8", "Unknown_x", "Unknown", "Proliferating", "Tcells_CD4_Naive", "Unknown", "Tregs", "Tcells_CD4", "Proliferating","Tregs_2","NK")
+names(new.cluster.ids_3) <- levels(tseur)
+tseur <- RenameIdents(tseur, new.cluster.ids_3)
+tseur <- FindSubCluster(tseur, cluster = c("Proliferating"), graph.name = "RNA_snn",subcluster.name = "proliferative_cells")
+Idents(object = tseur) <- "proliferative_cells"
+# new.cluster.ids_3 <- c("Exhausted_CD8", "Proliferating", "Tcells_CD8", "Unknown_x", "Unknown", "Proliferating", "Tcells_CD4_Naive", "Unknown", "Tregs", "Tcells_CD4", "Proliferating","Tregs_2","NK")
+# names(new.cluster.ids_3) <- levels(tseur)
+# tseur <- RenameIdents(tseur, new.cluster.ids_3)
+
+tseur <- FindSubCluster(tseur, cluster = c("Unknown"), graph.name = "RNA_snn",subcluster.name = "Unknown_cells")
+tseur@graphs
+Idents(object = tseur) <- "Unknown_cells"
+dittoDimPlot(tseur,var = "Unknown_cells",do.label = T,reduction.use = paste0("umap.harmony.",reduction_name)) & NoAxes()
+
+Idents(tseur) %>% unique()
+tseur@meta.data$proliferative_cells %>% unique
+
+umap_low_res_sub <- DimPlot(seurat_obj, reduction = "umap.unintegrated", group.by = "myeloid", label = TRUE, pt.size = 0.05) &
+    ggtitle("Umap of low resolution (0.01) + FindSubCluster(2)") &
+    NoLegend() &
+    theme(plot.title = element_text(size = 10)) & NoAxes()
+
+# ggsave(umap_low_res_sub, file = "umap_subclustered.pdf")
+umap_low_res_sub
+excel_sheet(seurat_obj.markers, paste0("annotated_subclusters_specific", sample))
+# dot_all_sub_anno <- DotPlot(seurat_obj, features = genes_of_interest) + RotatedAxis()
+
+cluster_counts <- table(Idents(seurat_obj))
+cluster_df <- as.data.frame(cluster_counts)
+colnames(cluster_df) <- c("Cluster", "Cell_Count")
+cluster_df$sample <- sample
+# Lymphoid_fraction == t-cell: 1148
+write.csv(cluster_df, file = paste0(here(), "/", "03_processing/07_Subclustering/data/subsets/lineage/Counts_per_clust/counts_df_", sample, ".csv"))
+lymphoid_fraction <- cluster_df[cluster_df$Cluster == "Lymphoid", 2] / sum(cluster_df$Cell_Count)
+print(paste0(round(lymphoid_fraction * 100, 2), "%"))
+
+```
+
+```{R subclustering the unknowns}
+
+seurat_obj <- FindSubCluster(seurat_obj, cluster = "Lymphoid", graph.name = "RNA_snn", subcluster.name = "lymphoid") ### Subclustering
+Idents(seurat_obj) <- "lymphoid"
+seurat_obj <- FindSubCluster(seurat_obj, cluster = "Myeloid", graph.name = "RNA_snn", subcluster.name = "myeloid") ### Subclustering
+
+umap_low_res_sub <- DimPlot(seurat_obj, reduction = "umap.unintegrated", group.by = "myeloid", label = TRUE, pt.size = 0.05) &
+    ggtitle("Umap of low resolution (0.01) + FindSubCluster(2)") &
+    NoLegend() &
+    theme(plot.title = element_text(size = 10)) & NoAxes()
+
+```

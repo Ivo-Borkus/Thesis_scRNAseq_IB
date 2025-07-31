@@ -1,0 +1,119 @@
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+```
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+library(DoubletFinder)
+library(clustree)
+library(knitr)
+library(rscrublet)
+library(Matrix)
+library(patchwork)
+library(harmony)
+library(lisi)
+library(cluster)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+```
+
+```{R Loading in meta data, echo = FALSE, message = FALSE}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+output_figs <- "03_processing/11_phase_4/figs/post_harmony/"
+```
+
+```{R Sillhoute score using silhouette_seurat, width = 20, height = 20, eval = F}
+# remotes::install_github("kidcancerlab/rrrSingleCellUtils")
+# https://github.com/satijalab/Integration2019/blob/master/analysis_code/integration/integration_metrics.R#L36
+
+seurat_obj <- readRDS(file = "03_processing/11_phase_4/data/post_harmony_immune_subset.rds")
+reduction_name <- "merged_subset_immune"
+res_values <- c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.5)
+silhouette_plots <- list()
+pca_embeddings <- Embeddings(seurat_obj, reduction = paste0("pca_", reduction_name))
+
+for (i in seq_along(res_values[1:8])) {
+    res <- res_values[i]
+    print(res)
+    Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+    cluster_labels <- as.integer(Idents(seurat_obj))
+
+    sil <- silhouette(cluster_labels, dist(pca_embeddings))
+    print("done with silhouette scoring")
+    sil_df <- as.data.frame(sil[, 1:3]) # Convert to DataFrame
+    colnames(sil_df) <- c("Cluster", "Neighbor", "Silhouette_Width")
+
+    # Arrange clusters by average silhouette width
+    sil_df <- sil_df %>%
+        mutate(Cluster = as.factor(Cluster)) %>%
+        arrange(Cluster, desc(Silhouette_Width)) %>%
+        mutate(Cell_Index = row_number()) # Create index for ordering
+
+    # Generate Silhouette plot for this resolution
+    p <- ggplot(sil_df, aes(x = Cell_Index, y = Silhouette_Width, fill = Cluster)) +
+        geom_bar(stat = "identity", width = 1) +
+        facet_wrap(~Cluster, scales = "free_y") + # Separate by cluster
+        coord_flip() + # Flip for classic silhouette plot appearance
+        labs(
+            title = paste("Silhouette Plot at Resolution", res),
+            x = "Cells (Ordered by Silhouette Width)", y = "Silhouette Width"
+        ) +
+        theme_minimal()
+
+    # Store plot in list
+    silhouette_plots[[as.character(res)]] <- p
+}
+
+saveRDS(silhouette_plots, file = paste(output_figs, "plots_R.rds"))
+
+silhouette_plots <- readRDS(file = paste(output_figs, "plots_R.rds"))
+grid.arrange(grobs = silhouette_plots, ncol = 3)
+ggsave(grid.arrange(grobs = silhouette_plots, ncol = 3), file = paste0(output_figs, "/silhouette_plots.png"))
+```
+
+```{R running only plots, fig.width = 20, fig.height = 20}
+silhouette_plots <- readRDS(file = paste(output_figs, "plots_R.rds"))
+
+silhouette_plots
+```
+```{R running markdown, eval = F}
+rmarkdown::render(
+    input = paste0("02_scripts/04_integration/Silhoutte_scores.rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits",
+    output_file = paste0("Silhoutte_scores.html")
+)
+```
+
+```{R determining silhoutte scores, eval = F}
+# res_values <- c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.5)
+# library(cluster)
+# obj <- seurat_obj
+# # https://bmcbioinformatics.biomedcentral.com/articles/10.1186/s12859-021-03957-4#Sec6
+```

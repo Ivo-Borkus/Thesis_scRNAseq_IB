@@ -1,0 +1,117 @@
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+# install.packages("languageserver")
+```
+
+```{R general functions, eval =T}
+library(here)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+output_figs <- "03_processing/12_phase_5/figs/Myeloid/batch_job/"
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+source("02_scripts/04_integration/functions.R")
+```
+
+
+```{R immune cells}
+seurat_obj <- readRDS(file = "03_processing/11_phase_4/data/immune_subset_without_doubs_annotated.rds")
+reduction_name <- "immune_no_doub"
+Idents(seurat_obj) <- seurat_obj@meta.data$ann_lvl_1_filtered
+unique(Idents(seurat_obj))
+
+```
+
+```{R subset data , echo = TRUE, include = TRUE}
+celltypes <- c("Monocytes", "DCs", "Microglia", "pDCs")
+unique(Idents(seurat_obj))
+myeseur <- subset(x = seurat_obj, idents = celltypes, invert = F)
+```
+
+```{R processing subset}
+reduction_name <- "Myeloid"
+myeseur[["RNA"]] <- split(myeseur[["RNA"]], f = myeseur$sample)
+myeseur <- FindVariableFeatures(myeseur, selection.method = "vst", nfeatures = 2000, verbose = TRUE)
+hvf_info <- HVFInfo(myeseur)
+top_variable_genes <- hvf_info[order(hvf_info$variance.standardized, decreasing = TRUE), ]
+top_2000_genes <- rownames(top_variable_genes)[1:2000]
+VariableFeatures(myeseur) <- top_2000_genes
+all.genes <- rownames(myeseur)
+myeseur <- ScaleData(object = myeseur, features = all.genes, verbose = FALSE)
+myeseur <- RunPCA(
+    object = myeseur, nfeatures.print = 5, ndims.print = 1:2, reduction.name = paste0("pca_", reduction_name)
+)
+
+ElbowPlot(myeseur, reduction =  paste0("pca_", reduction_name),ndims = 50)
+VizDimLoadings(myeseur, dims = 1:5, reduction =  paste0("pca_", reduction_name), nfeatures = 15)
+
+
+myeseur <- IntegrateLayers(
+    object = myeseur, method = HarmonyIntegration,
+    orig.reduction = paste0("pca_", reduction_name), new.reduction = paste0("harmony_pca.", reduction_name),
+    verbose = TRUE
+)
+res_values <- c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.5)
+myeseur <- FindNeighbors(myeseur, reduction = paste0("harmony_pca.", reduction_name), dims = 1:25)
+myeseur <- FindClusters(myeseur, resolution = res_values, algorithm = 4)
+myeseur <- RunUMAP(myeseur, reduction = paste0("harmony_pca.", reduction_name), dims = 1:25, reduction.name = paste0("umap.harmony.", reduction_name))
+Running_plots_post_harmony(myeseur, reduction_name)
+
+myeseur <- JoinLayers(myeseur)
+DimPlot(
+    object = myeseur,
+    reduction = paste0("umap.harmony.", reduction_name),
+    pt.size = 0.1,
+    group.by = "ann_lvl_1_filtered",
+    label = TRUE
+) &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+# saveRDS(processed_list, file = "03_processing/09_subset_annotation/data/processed_list.rds")
+```
+
+```{R Validating integration}
+ndims = 25
+
+Embeddings(myeseur, reduction = paste0("harmony_pca.", reduction_name))[,1:25] %>%  compute_lisi( ,meta_data = myeseur@meta.data,label_colnames =  c("sample"))-> lis
+Embeddings(myeseur, reduction = paste0("pca_", reduction_name))[,1:25] %>%  compute_lisi( ,meta_data = myeseur@meta.data,label_colnames =  c("sample"))-> lis_no_int
+
+lis_no_int$integrated <- "no"
+lis$integrated <- "yes"
+combined <- rbind(lis_no_int, lis)
+t.test(sample ~ integrated, data = combined) -> test_result
+plot <- ggplot(combined, mapping = aes(x = integrated, y = sample)) +
+    geom_boxplot() +
+    theme_minimal() & labs(title = paste0("Lisi score pre and post integration with a significand t-test statistic: ", round(test_result$statistic,2)))
+plot
+ggsave(plot, filename = paste0(output_figs, "Lisi_samples_",reduction_name,".png"))
+```
+
+
+```{R saving object, eval = T}
+saveRDS(myeseur, file = "03_processing/12_phase_5/data/Myeloid_seurat.rds")
+```
+
+```{R rmd, eval = F}
+rmarkdown::render(
+    input = paste0("02_scripts/05_ann_lvl2/01_Myeloid.rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits",
+    output_file = paste0("01_Myeloid.html")
+)
+```

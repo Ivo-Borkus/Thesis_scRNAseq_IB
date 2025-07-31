@@ -1,0 +1,188 @@
+# Tomorrow,
+###  1. Check with Juan the markers of the objects to really confirm my findings.
+###  2. Overlap all of the previous annotations in the bigger objects.
+###  3. Compare the findings of annotation with the results in wetlab, do things correlate with the values found?
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+# install.packages("languageserver")
+```
+
+```{R general functions, eval =T}
+library(here)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+output_figs <- "03_processing/13_phase_6/figs/proliferation/"
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+source("02_scripts/04_integration/functions.R")
+source("02_scripts/06_analysing_annotations/utils.R")
+library(dittoSeq)
+
+
+```
+```{R saving object,eval = T}
+tseur <- readRDS( file = "03_processing/12_phase_5/data/Tcell_seurat_annotated.rds")
+reduction_name <- "Tcell"
+
+Idents(object = tseur) <- "RNA_snn_res.0.9"# Order is messed up, so the order of sizes does not correspond
+# new.cluster.ids <- c("Exhausted_CD8", "Tcells_CD8", "Bad-Quality", "Unknown", "Unknown", "Proliferative_1", "Tcells_CD4", "Tcells_Naive", "Tregs", "Tregs_2", "NKs")
+new.cluster.ids <- c("Exhausted_CD8", "Proliferating_CD8", "Tcells_CD8", "Unknown", "Unknown", "Proliferative_Tcells", "Tcells_CD4_Naive", "Unknown", "Tregs", "Tcells_CD4", "Tcells_CD4_proliferating","Tregs_2","NK")
+new.cluster.ids_2 <- c("Exhausted_CD8", "Proliferating_CD8", "Tcells_CD8", "Unknown_1", "Unknown_2", "Proliferative_Tcells", "Tcells_CD4_Naive", "Unknown_3", "Tregs", "Tcells_CD4", "Tcells_CD4_proliferating","Tregs_2","NK")
+names(new.cluster.ids_2) <- levels(tseur)
+tseur <- RenameIdents(tseur, new.cluster.ids_2 )
+tseur[["ann_lvl_2_Tcells_specific"]] <- Idents(tseur)
+Idents(object = tseur) <- "RNA_snn_res.0.9"
+names(new.cluster.ids) <- levels(tseur)
+tseur <- RenameIdents(tseur, new.cluster.ids)
+tseur[["ann_lvl_2_Tcells"]] <- Idents(tseur)
+DimPlot(tseur, reduction = paste0("umap.harmony.",reduction_name),pt.size = 0.1, label = T, group.by = "ann_lvl_1_filtered") & NoAxes()
+DimPlot(tseur, reduction = paste0("umap.harmony.",reduction_name),pt.size = 0.1, label = T, group.by = "ann_lvl_2_Tcells") & NoAxes()
+```
+
+
+
+```{R subclustering all proliferative regions}
+Idents(object = tseur) <- "RNA_snn_res.0.9"
+new.cluster.ids_3 <- c("Exhausted_CD8", "Proliferating_CD8_1", "CD8_cytotoxic", "Bad_Quality", "Central_memory_2", "Proliferating_2", "Central_memory_CD4", "CD8_exhausted_2", "Tregs_1", "Tfh_cells", "Proliferating_CD4_1","Tregs_2","MAIT_NKT")
+names(new.cluster.ids_3) <- levels(tseur)
+tseur <- RenameIdents(tseur, new.cluster.ids_3)
+tseur[["ann_lvl_2_Tcells_final"]] <- Idents(tseur)
+
+
+Idents(tseur) %>% unique()
+celltypes <-  c("Proliferating_CD4_1","Proliferating_CD8_1","Proliferating_2")
+
+proseur <- subset(x = tseur, idents = celltypes, invert = F)
+colnames(proseur@meta.data)
+Idents(proseur) <- proseur@meta.data$ann_lvl_2_Tcells_final
+head(Idents(proseur))
+
+
+```
+
+
+
+
+
+```{R proliferation}
+ncol(proseur)
+reduction_name <- "proliferation"
+proseur[["RNA"]] <- split(proseur[["RNA"]], f = proseur$sample)
+proseur <- FindVariableFeatures(proseur, selection.method = "vst", nfeatures = 2000, verbose = TRUE)
+hvf_info <- HVFInfo(proseur)
+top_variable_genes <- hvf_info[order(hvf_info$variance.standardized, decreasing = TRUE), ]
+top_2000_genes <- rownames(top_variable_genes)[1:2000]
+VariableFeatures(proseur) <- top_2000_genes
+proseur <- ScaleData(object = proseur, features = rownames(proseur), verbose = FALSE)
+proseur <- RunPCA(
+    object = proseur, nfeatures.print = 5, ndims.print = 1:2, reduction.name = paste0("pca_", reduction_name)
+)
+ElbowPlot(proseur, reduction =  paste0("pca_", reduction_name),ndims = 50)
+VizDimLoadings(proseur,
+    dims = 1:5, reduction =  paste0("pca_", reduction_name), nfeatures = 15
+)
+# PCA_elbow <- ElbowPlot(proseur, reduction =  paste0("pca_", reduction_name),ndims = 50)
+# Genes_influence_PCA <- VizDimLoadings(proseur,
+#     dims = 1:5, reduction =  paste0("pca_", reduction_name), nfeatures = 15
+# )
+# ggsave(PCA_elbow, filename = paste0(output_figs, reduction_name, "_PCA_elbow_1.png"), width = 10, height= 10)
+# ggsave(Genes_influence_PCA, filename = paste0(output_figs, reduction_name, "_PCA_loadings_1.png"), width = 15, height = 15)
+
+proseur <- IntegrateLayers(
+    object = proseur, method = HarmonyIntegration,
+    orig.reduction = paste0("pca_", reduction_name), new.reduction = paste0("harmony_pca.", reduction_name),
+    verbose = TRUE
+)
+
+res_values <- c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.5)
+proseur <- FindNeighbors(proseur, reduction = paste0("harmony_pca.", reduction_name), dims = 1:25)
+proseur <- FindClusters(proseur, resolution = res_values, algorithm = 4)
+proseur <- RunUMAP(proseur, reduction = paste0("harmony_pca.", reduction_name), dims = 1:25, reduction.name = paste0("umap.harmony.", reduction_name))
+Running_plots_post_harmony(proseur, reduction_name)
+proseur <- JoinLayers(proseur)
+# saveRDS(processed_list, file = "03_processing/09_subset_annotation/data/processed_list.rds")
+proseur@meta.data$ann_lvl_1 %>% unique()
+```
+
+```{R}
+
+FeaturePlot(proseur,reduction = paste0("umap.harmony.",reduction_name), features = c("percent_mt")) & NoAxes()
+ggsave(filename=paste0(output_figs,"umao_mt.png"), width = 10, height = 10)  
+
+
+Idents(object = proseur) <- "RNA_snn_res.1.5"
+
+DimPlot(proseur, reduction = paste0("umap.harmony.",reduction_name), label = T) & NoAxes()
+ggsave(filename=paste0(output_figs,"umap_1.5.png"), width = 10, height = 10)  
+
+VlnPlot(proseur,features = c("percent_mt","percent.rb","nCount_RNA","nFeature_RNA","doublet.score"))
+ggsave(filename=paste0(output_figs,"violin_basic_stats.png"), width = 10, height = 10)  
+
+
+
+```
+
+
+```{R making an excel}
+excel_sheet <- function(markers, output_dir, name) {
+    library(writexl)
+    print(paste0("Output will be put in: ", output_dir, name, ".xlsx"))
+    if (file.exists(output_dir)) {
+        markers %>%
+            arrange(cluster, desc(avg_log2FC)) %>% # Arrange within each cluster
+            group_by(cluster) %>%
+            select(cluster, pct.1, pct.2, p_val, p_val_adj, avg_log2FC, gene) %>%
+            group_split() %>% # Split into list by 'cluster'
+            setNames(unique(markers$cluster)) %>% # Name list elements
+            writexl::write_xlsx(paste0(output_dir, name, ".xlsx"))
+    } else {
+        stop("Directory does not exist")
+    }
+}
+output_excel <- "03_processing/13_phase_6/data/prolif_excel/"
+
+```
+
+```{R}
+
+Idents(object = proseur) <- "RNA_snn_res.1.5"
+
+
+proseur.markers <- FindAllMarkers(
+    object = proseur,
+    only.pos = TRUE, min.pct = 0.25,
+    logfc.threshold = 0.25
+)
+excel_sheet(proseur.markers, output_excel, "prolif_1.5")
+
+FeaturePlot(proseur,reduction = paste0("umap.harmony.",reduction_name), features = c("CD4","CD8A","CD8B","CD3D","CD3E","NCAM1","KLRB1","SELL","CCR7","LEF1","TCF7","CXCL13"), order = TRUE) & NoAxes()
+ggsave(filename=paste0(output_figs,"umap_features.png"), width = 15, height = 10)  
+
+```
+
+```{R go for res 0.05 and split the object in high_mt vs low_mts}
+Idents(object = proseur) <- "RNA_snn_res.0.05"
+Idents(object = proseur) %>% unique()
+celltypes <-  c("1")
+
+proseur_high <- subset(x = proseur, idents = celltypes, invert = T)
+proseur_low <- subset(x = proseur, idents = celltypes, invert = F)
+
+
+
+```

@@ -1,0 +1,185 @@
+---
+title: "Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 1
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+# Loading packages
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(ggrepel)
+# library(paletteer)
+library(gridExtra)
+# remotes::install_github("iaaaka/Rscrublet")
+# install.packages("harmony")
+library(rscrublet)
+library(harmony) # install using mamba, R is now downgraded
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+# here::i_am("02_scripts/QC_sequencing.rmd")
+
+source("02_scripts/101_processing_external_datasets/qc_functions.R")
+```
+
+# This script aimed to check marker expression overlap with study annotations
+
+It is not mentioned in the report, but this sanity check was important to get a sense of the datasets before determining the correct strategy. 
+Moreover, we found one paper was quite... "adventerous" in their annotatations.
+
+
+```{R}
+umap_feature_vec <- c(
+    "PTPRC", # Immune
+    "TOP2A", "MKI67", "STMN1", # Proliferative
+    ## Lymphoid
+    "CD3D", "CD3E", # T cells
+    "CD4", "CD8A", "CD8B", # distinction between 4 and 8
+    "FOXP3", "IL2RA", # T regs
+    "TOX", # Tfh cell
+    "NCAM1", "KLRF1", # NK cells
+    "MS4A1", "CD79A", # B cells
+    # "TCL1A", # Naive B cells
+    # "BANK1", "BLK", # Memory/ activated B cells
+    "SDC1", "PRDM1", # Plasma cells
+    ## Myeloid
+    "S100A8", "CD14", # Monocytes
+    "CD163", "CD68", # Macrophage markers
+    "P2RY12", "SLC2A5", # microglia
+    "IL3RA", # pDCs
+    "CD1C", # DCs
+    "MAG", "MLANA" # other cells
+)
+
+Running_plots_post_harmony <- function(seurat_obj, reduction_name, sample_col) {
+    resolution_columns <- grep("^RNA_snn_res\\.",
+        colnames(seurat_obj@meta.data),
+        value = TRUE
+    )
+    umap_resolution_combined <- DimPlot(
+        object = seurat_obj,
+        reduction = paste0("umap.harmony.", reduction_name),
+        group.by = resolution_columns,
+        pt.size = 0.1,
+        label = TRUE
+    ) & NoLegend() &
+        theme(plot.title = element_text(size = 10)) &
+        NoAxes() # & labs(title = paste0("Data: ", reduction_name, " plot of resolutions "))
+    print(umap_resolution_combined)
+    ggsave(umap_resolution_combined, file = paste0(output_figs, reduction_name, "_harmony_res.png"))
+
+
+    features <- FeaturePlot(seurat_obj,
+        features = umap_feature_vec,
+        reduction = paste0("umap.harmony.", reduction_name),
+        ncol = 3, order = TRUE
+    ) & NoAxes() # & labs(title = paste0("Data: ", reduction_name, " plot of features "))
+    print(features)
+    ggsave(features, file = paste0(output_figs, reduction_name, "_harmony_features.png"), width = 18, height = 20)
+
+
+    umap_by_sample <- DimPlot(
+        object = seurat_obj,
+        reduction = paste0("umap.harmony.", reduction_name),
+        group.by = sample_col,
+        pt.size = 0.1,
+        label = T
+    ) & theme(plot.title = element_text(size = 10)) &
+        NoAxes() & labs(title = paste0("Data: ", reduction_name, " plot of samples"))
+    print(umap_by_sample)
+
+    ggsave(umap_by_sample, file = paste0(output_figs, reduction_name, "_harmony_samples.png"), height = 20, width = 20)
+
+    if (reduction_name == "Biermann") {
+        print("This is the Biermann dataset")
+        for (i in c(1:5)) {
+            cell_anno_list[[1]]
+            umap_by_annotation <- DimPlot(
+                object = seurat_obj,
+                reduction = paste0("umap.harmony.", reduction_name),
+                group.by = cell_anno_list[[i]],
+                pt.size = 0.1,
+                label = T,
+            ) & theme(plot.title = element_text(size = 10))
+            ggsave(umap_by_annotation, file = paste0(output_figs, reduction_name, i, "_harmony_specific_annotation.png"), height = 20, width = 20)
+        }
+    } else if (reduction_name == "Gonzalez") {
+        print("This is the Gonzalez dataset")
+        for (i in c(6)) {
+            cell_anno_list[[1]]
+            umap_by_annotation <- DimPlot(
+                object = seurat_obj,
+                reduction = paste0("umap.harmony.", reduction_name),
+                group.by = cell_anno_list[[i]],
+                pt.size = 0.1,
+                label = T,
+            ) & theme(plot.title = element_text(size = 10))
+            ggsave(umap_by_annotation, file = paste0(output_figs, reduction_name, i, "_harmony_specific_annotation.png"), height = 20, width = 20)
+        }
+    } else {
+        print("This is the Lee dataset")
+        for (i in c(7:9)) {
+            cell_anno_list[[1]]
+            umap_by_annotation <- DimPlot(
+                object = seurat_obj,
+                reduction = paste0("umap.harmony.", reduction_name),
+                group.by = cell_anno_list[[i]],
+                pt.size = 0.1,
+                label = T,
+            ) & theme(plot.title = element_text(size = 10))
+            ggsave(umap_by_annotation, file = paste0(output_figs, reduction_name, i, "_harmony_specific_annotation.png"), height = 20, width = 20)
+        }
+    }
+}
+```
+
+
+```{R}
+seurat_list <- readRDS("03_processing/101_processing_exernal/data/batch_job_2/processed_seurat_batch_job.rds")
+output_figs <- "03_processing/101_processing_exernal/figs/batch_job_2/"
+sample_list <- list(
+    Biermann = "ID",
+    Gonzalez = "sample_names",
+    Lee = "Sample"
+)
+lapply(c(1, 2, 3), function(seurat) {
+    name <- names(sample_list)[seurat]
+    reduction_name <- name
+    seurat_obj <- seurat_list[[seurat]]
+    sample_col <- sample_list[[name]][1]
+    ncol(seurat_obj)
+    # print(name)
+    # print(seurat_obj)
+    # print(sample_col)
+    Running_plots_post_harmony(seurat_obj, reduction_name, sample_col = sample_col)
+})
+```
+
+```{R}
+sessionInfo()
+```
+
+
+```{R rmd, eval = F}
+rmarkdown::render(
+    input = paste0("02_scripts/101_processing_external_datasets/03_checking_seurats.rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits",
+    output_file = paste0("03_checking_seurats.html")
+)
+```
+

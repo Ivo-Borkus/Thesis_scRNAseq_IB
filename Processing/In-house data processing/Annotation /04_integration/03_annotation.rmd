@@ -1,0 +1,257 @@
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+```
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+library(DoubletFinder)
+library(clustree)
+library(knitr)
+library(rscrublet)
+library(Matrix)
+library(patchwork)
+library(harmony)
+library(lisi)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+```
+
+```{R Loading in meta data, echo = FALSE, message = FALSE}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+```
+
+```{R setting variables}
+output_figs <- "03_processing/11_phase_4/figs/post_harmony/"
+output_figs_preharm <- "03_processing/11_phase_4/figs/pre_harmony/"
+nejm_colors <- paletteer::paletteer_d(
+    "ggsci::default_nejm", length(levels(as.factor(meta_data$sample_fullname)))
+)
+primary_colors <- c("#66c2a5", "#fc8d62", "#8da0cb", "#e78ac3")
+primary_colors_sample <- c("#66c2a5", "#fc8d62", "#fc8d62", "#8da0cb", "#e78ac3", "#e78ac3", "#e78ac3", "#e78ac3")
+primary <- c("CUP", "Colon", "Colon", "Lung", "Melanoma", "Melanoma", "Melanoma", "Melanoma")
+primary_sample <- c("CUP", "Colon_1", "Colon_2", "Lung", "Melanoma_1_sorted", "Melanoma_2_sorted", "Melanoma_2_unsorted", "Melanoma_3_unsorted")
+```
+
+```{R general functions, eval =T}
+source("02_scripts/04_integration/functions.R")
+```
+
+
+```{R immune cells}
+seurat_obj <- readRDS(file = "03_processing/11_phase_4/data/post_harmony_immune_subset.rds")
+reduction_name <- "merged_subset_immune"
+```
+
+
+```{R adding meta_data to the seurat_obj}
+un_samples <- unique(seurat_obj$sample)
+
+sample_to_primary_sample <- setNames(primary_sample, un_samples)
+sample_to_primary <- setNames(primary, un_samples)
+seurat_obj@meta.data$primary_sample <- sample_to_primary_sample[seurat_obj$sample]
+seurat_obj@meta.data$primary <- sample_to_primary[seurat_obj$sample]
+
+table(seurat_obj@meta.data$sample, seurat_obj@meta.data$primary_sample)
+table(seurat_obj@meta.data$sample, seurat_obj@meta.data$primary)
+head(seurat_obj@meta.data$primary)
+```
+
+```{R select resolution}
+
+```
+
+# Check silhoutte score
+# Check the sample composition per cluster (Simpsons diversity index)
+```{R cluster composition per sample, eval = F}
+Idents(object = seurat_obj) <- "RNA_snn_res.0.3"
+unique(seurat_obj$seurat_clusters)
+
+unique(Idents(seurat_obj))
+seurat_obj@meta.data %>%
+    count(sample, RNA_snn_res.0.3) %>%
+    group_by(RNA_snn_res.0.3) %>%
+    mutate(composition = n / sum(n)) %>%
+    ggplot(aes(x = RNA_snn_res.0.3, y = composition, fill = sample)) +
+    geom_bar(position = "stack", stat = "identity") +
+    scale_fill_manual(values = nejm_colors) +
+    labs(title = "Composition of clusters per sample for resolution 0.3 post harmony") -> cluster_comp_plot
+
+ggsave(cluster_comp_plot, file = paste0(output_figs, "cluster_comp_sample_post.png"))
+```
+
+```{R pre-harmony distribution, eval = F}
+seurat_obj_preharm <- readRDS(file = "03_processing/11_phase_4/data/merged_subset_immune.rds")
+
+seurat_obj_preharm@meta.data %>%
+    count(sample, RNA_snn_res.0.3) %>%
+    group_by(RNA_snn_res.0.3) %>%
+    mutate(composition = n / sum(n)) %>%
+    ggplot(aes(x = RNA_snn_res.0.3, y = composition, fill = sample)) +
+    geom_bar(position = "stack", stat = "identity") +
+    scale_fill_manual(values = nejm_colors) +
+    labs(title = "Composition of clusters per sample for resolution 0.3 pre harmony") -> cluster_comp_plot_2
+
+ggsave(cluster_comp_plot_2, file = paste0(output_figs_preharm, "cluster_comp_sample_pre.png"))
+```
+
+
+```{R checking general stats for clusters}
+Idents(object = seurat_obj) <- "RNA_snn_res.0.3"
+vln <- VlnPlot(seurat_obj, features = c("percent_mt", "nCount_RNA", "doublet.score", "nFeature_RNA"), ncol = 2, pt.size = 0.1)
+
+ggsave(vln, file = paste0(output_figs, "violin_basic_stats_res_0_3.png"))
+```
+
+
+```{R excel sheet function}
+excel_sheet <- function(markers, output_dir, name) {
+    library(writexl)
+    print(paste0("Output will be put in: ", output_dir, name, ".xlsx"))
+    if (file.exists(output_dir)) {
+        markers %>%
+            arrange(cluster, desc(avg_log2FC)) %>% # Arrange within each cluster
+            group_by(cluster) %>%
+            select(cluster, pct.1, pct.2, p_val, p_val_adj, avg_log2FC, gene) %>%
+            group_split() %>% # Split into list by 'cluster'
+            setNames(unique(markers$cluster)) %>% # Name list elements
+            writexl::write_xlsx(paste0(output_dir, name, ".xlsx"))
+    } else {
+        stop("Directory does not exist")
+    }
+}
+output_excel <- "03_processing/11_phase_4/data/excels/"
+```
+```{R findmarkers}
+Idents(object = seurat_obj) <- "RNA_snn_res.0.3"
+seurat_obj.markers <- FindAllMarkers(
+    object = seurat_obj,
+    only.pos = TRUE, min.pct = 0.25,
+    logfc.threshold = 0.25
+)
+
+excel_sheet(seurat_obj.markers, output_excel, "post_harmony_immune_res_0.3")
+```
+
+```{R compare with Juan}
+Idents(object = seurat_obj) <- "RNA_snn_res.0.3"
+umap_res <- DimPlot(
+    object = seurat_obj,
+    reduction = paste0("umap.harmony.", reduction_name),
+    pt.size = 0.1,
+    label = TRUE
+) &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+
+ggsave(umap_res, file = paste0(output_figs, "umap_res0.3_unnanotated.png"))
+
+new.cluster.ids <- c("Monocytes", "Metabolic_CD8", "Cytotoxic_CD8", "Tregs", "Proliferative_Tregs_and_CD8", "Proliferative_1", "DCs", "Doublets", "pDCs_Bcells", "Microglia", "Plasmacells", "TAMs")
+
+names(new.cluster.ids) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids)
+seurat_obj[["ann_lvl_1"]] <- Idents(seurat_obj)
+```
+
+```{R make composition plots}
+seurat_obj@meta.data$primary_sample <- factor(seurat_obj@meta.data$primary_sample, levels = c(
+    primary_sample
+))
+colnames(seurat_obj@meta.data)
+seurat_obj@meta.data %>%
+    count(primary_sample, ann_lvl_1) %>%
+    group_by(ann_lvl_1) %>%
+    mutate(composition = n / sum(n)) %>%
+    ggplot(aes(x = ann_lvl_1, y = composition, fill = primary_sample)) +
+    geom_bar(position = "stack", stat = "identity") +
+    scale_fill_manual(values = nejm_colors) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, face = "bold", size = 14, color = "black")) +
+    labs(title = "Composition of clusters per sample for resolution 0.3 annotated post harmony") -> cluster_comp_plot
+ggsave(cluster_comp_plot, file = paste0(output_figs, "cluster_comp_sample_post_annotated.png"))
+
+
+
+umap_annotated <- DimPlot(
+    object = seurat_obj,
+    reduction = paste0("umap.harmony.", reduction_name),
+    pt.size = 0.1,
+    label = TRUE
+) & NoLegend() &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes() & labs(title = "Umap of annotated immune populations (all patients)")
+ggsave(umap_annotated, file = paste0(output_figs, "annotated_umap.png"))
+
+
+vln <- VlnPlot(seurat_obj, features = c("percent_mt", "nCount_RNA", "doublet.score", "nFeature_RNA"), ncol = 2, pt.size = 0.1)
+ggsave(vln, file = paste0(output_figs, "Violin_basic_stats_annotated.png"))
+
+dot_markers <- DotPlot(seurat_obj, features = c(
+    "CD8A", "CD8B", "CD4", "LAG3", "CX3CR1", "FOXP3", "TOP2A", "MKI67", "MS4A1", "CD79A", "SDC1", "VCAN", "CD14", "CD68", "PDCD1", "HAVCR2", "LYVE1", "TMEM119", "FCGR3A", "S100A8", "SLC2A5", "P2RY12", "CD1C", "LILRA4", "MLANA"
+), cluster.idents = TRUE) + RotatedAxis()
+
+ggsave(dot_markers, file = paste0(output_figs, "dotpot_annotated_specific.png"), width = 15, height = 10)
+```
+
+```{R do some downstream analysis on interesting clusters such as DE}
+## To find the difference between samples need to make a new column: For metabolic CD8 for example: Assing for each cell-type a mark for each primary. To compare the primaries with each other, understanding the differences.
+
+## Doing a Metaprogram might be a bit much work for now, using NMFs
+
+## Take a look a the Dissecting the treatment specific environment.
+## Maybe group all T-cells together and then do the signature per sample, to see what differences we  find between primaries?
+
+
+# From the paper:
+# Cell type frequency comparison  We calculated frequencies of cell types in all snRNA-seq samples from MBM and ECM groups and compared medians of the two groups to determine differences in frequency. For MBM samples, cell type frequencies between scRNA-seq and snRNA-seq samples were calculated as well. Significance was assessed using Wilcoxon rank-sum test.
+
+# Non-negative matrix factorization (NMF) using KINOMO
+
+# Master regulator analysis
+# SCENIC (single-cell regulatory network inference and clustering)
+```
+
+
+```{R select only T-cell population}
+
+```
+
+```{R redo clustering on the T-cell subset}
+
+```
+
+```{R select resolution}
+
+```
+
+```{R findmarkers}
+
+```
+
+```{R compare with Juan}
+
+```

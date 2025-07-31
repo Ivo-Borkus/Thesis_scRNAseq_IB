@@ -1,0 +1,135 @@
+# Tomorrow,
+###  1. Check with Juan the markers of the objects to really confirm my findings.
+###  2. Overlap all of the previous annotations in the bigger objects.
+###  3. Compare the findings of annotation with the results in wetlab, do things correlate with the values found?
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+# install.packages("languageserver")
+```
+
+```{R general functions, eval =T}
+library(here)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+output_figs <- "03_processing/13_phase_6/figs/14_04_2025/"
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+source("02_scripts/04_integration/functions.R")
+source("02_scripts/06_analysing_annotations/utils.R")
+library(dittoSeq)
+library(ggpubr)
+```
+
+
+
+```{R }
+tseur <- readRDS( file = "03_processing/12_phase_5/data/Tcell_seurat_annotated.rds")
+reduction_name <- "Tcell"
+Idents(object = tseur) <- "RNA_snn_res.0.9"# Order is messed up, so the order of sizes does not correspond
+# new.cluster.ids <- c("Exhausted_CD8", "Tcells_CD8", "Bad-Quality", "Unknown", "Unknown", "Proliferative_1", "Tcells_CD4", "Tcells_Naive", "Tregs", "Tregs_2", "NKs")
+new.cluster.ids <- c("Exhausted_CD8", "Proliferating_CD8", "Tcells_CD8", "Unknown", "Unknown", "Proliferative_Tcells", "Tcells_CD4_Naive", "Unknown", "Tregs", "Tcells_CD4", "Tcells_CD4_proliferating","Tregs_2","NK")
+new.cluster.ids_2 <- c("Exhausted_CD8", "Proliferating_CD8", "Tcells_CD8", "Unknown_1", "Unknown_2", "Proliferative_Tcells", "Tcells_CD4_Naive", "Unknown_3", "Tregs", "Tcells_CD4", "Tcells_CD4_proliferating","Tregs_2","NK")
+names(new.cluster.ids_2) <- levels(tseur)
+tseur <- RenameIdents(tseur, new.cluster.ids_2 )
+tseur[["ann_lvl_2_Tcells_specific"]] <- Idents(tseur)
+Idents(object = tseur) <- "RNA_snn_res.0.9"
+names(new.cluster.ids) <- levels(tseur)
+tseur <- RenameIdents(tseur, new.cluster.ids)
+tseur[["ann_lvl_2_Tcells"]] <- Idents(tseur)
+DimPlot(tseur, reduction = paste0("umap.harmony.",reduction_name),pt.size = 0.1, label = T, group.by = "ann_lvl_1_filtered") & NoAxes()
+DimPlot(tseur, reduction = paste0("umap.harmony.",reduction_name),pt.size = 0.1, label = T, group.by = "ann_lvl_2_Tcells") & NoAxes()
+
+```
+
+
+
+```{R}
+
+Idents(tseur) %>% unique()
+dittoDimPlot(tseur,var = "ann_lvl_2_Tcells_specific",do.label = T,reduction.use = paste0("umap.harmony.",reduction_name)) & NoAxes()
+p <- multi_dittoPlot(tseur, var = c("percent_mt","doublet.score","percent.rb","nFeature_RNA","nCount_RNA"), group.by = "ann_lvl_2_Tcells_specific", plots = c("vlnplot","jitter")
+,list.out = TRUE)
+
+g <- do.call(grid.arrange,p)
+ggsave(filename = paste0(output_figs,"violin_of_stats.png"),g)
+
+g <- VlnPlot(tseur, features = c("percent_mt","doublet.score","percent.rb","nFeature_RNA","nCount_RNA"), group.by = "ann_lvl_2_Tcells_specific")
+ggsave(filename = paste0(output_figs,"violin_of_stats.png"),g, width = 15, height = 15)
+
+
+dittoDimPlot(tseur,
+    var = "RNA_snn_res.0.9",
+    do.label = T,
+    reduction.use = paste0("umap.harmony.",reduction_name),
+    # do.contour = TRUE, contour.color = 'black'   
+    ) & NoAxes()
+ggsave(filename=paste0(output_figs,"umap_unannotated_tcells.png"), width = 15, height = 15)
+
+
+g <- VlnPlot(tseur, features = c("percent_mt","doublet.score","percent.rb","nFeature_RNA","nCount_RNA"), group.by = "RNA_snn_res.0.9")
+ggsave(filename = paste0(output_figs,"violin_of_stats_0.9.png"),g, width = 15, height = 15)
+
+
+dittoDimPlot(tseur,
+    var = "ann_lvl_2_Tcells_specific",
+    do.label = T,
+    reduction.use = paste0("umap.harmony.",reduction_name),
+    do.contour = TRUE, contour.color = 'black'   ) & NoAxes()
+ggsave(filename=paste0(output_figs,"umap_annotated_tcells.png"), width = 15, height = 15)
+
+
+plot_list <- FeaturePlot(tseur, features = c("PTPRC","CD4","CD8A","CD8B","CCR7","IL7R", "FOXP3","NCAM1","KLRB1","TOP2A","MKI67"), reduction =paste0("umap.harmony.",reduction_name), order = TRUE) & NoAxes()
+
+
+ggsave(filename=paste0(output_figs,"umap_genes.png"),plot_list, width = 20, height = 15)
+plot_list <- FeaturePlot(tseur, features = c("percent_mt"), reduction =paste0("umap.harmony.",reduction_name), order = TRUE) & NoAxes()
+ggsave(filename=paste0(output_figs,"umap_mt.png"),plot_list, width = 10, height = 10)
+
+
+# dittoDimHex(tseur,"percent_mt",reduction.use = paste0("umap.harmony.",reduction_name),show.axes.numbers = FALSE,axes)
+```
+
+```{R}
+Idents(object = tseur) <- "RNA_snn_res.0.9"
+
+new.cluster.ids_3 <- c("Exhausted_CD8", "Proliferating_CD8_1", "CD8_cytotoxic", "Bad_Quality", "Central_memory_2", "Proliferating_2", "Central_memory_CD4", "CD8_exhausted_2", "Tregs_1", "Tfh_cells", "Proliferating_CD4_1","Tregs_2","MAIT_NKT")
+names(new.cluster.ids_3) <- levels(tseur)
+tseur <- RenameIdents(tseur, new.cluster.ids_3)
+tseur[["ann_lvl_2_Tcells_final"]] <- Idents(tseur)
+
+dittoDimPlot(tseur,
+    var = "ann_lvl_2_Tcells_final",
+    do.label = T,
+    reduction.use = paste0("umap.harmony.",reduction_name)
+    # do.contour = TRUE, contour.color = 'black'  
+     ) & NoAxes()
+ggsave(filename=paste0(output_figs,"umap_annotated_tcells_final.png"), width = 15, height = 15)
+
+
+dittoBarPlot(tseur, "ann_lvl_2_Tcells_final", group.by = "primary_sample")
+ggsave(filename=paste0(output_figs,"barplot_per_sample.png"), width = 15, height = 15)
+
+g <- VlnPlot(tseur, features = c("percent_mt","doublet.score","percent.rb","nFeature_RNA","nCount_RNA"), group.by = "ann_lvl_2_Tcells_final")
+ggsave(filename = paste0(output_figs,"violin_of_stats_annotated.png"),g, width = 15, height = 15)
+
+dot_markers <- DotPlot(tseur, features = c(
+    "PTPRC","CD8A", "CD8B", "CD4", "LAG3", "CX3CR1","CCR7","SELL" ,"NCAM1","NKG7","KLRB1","FOXP3", "TOP2A", "MKI67", "PDCD1", "HAVCR2", "LYVE1", "TMEM119", "FCGR3A", "LILRA4", "MLANA"
+), cluster.idents = TRUE) + RotatedAxis()
+
+ggsave(dot_markers, file = paste0(output_figs, "Dotplot_tcells_annotated.png"), width = 15, height = 10)
+```

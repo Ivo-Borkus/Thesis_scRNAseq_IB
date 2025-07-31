@@ -1,0 +1,326 @@
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+```
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+library(DoubletFinder)
+library(clustree)
+library(knitr)
+library(rscrublet)
+library(Matrix)
+library(patchwork)
+library(harmony)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+```
+
+```{R Loading in meta data, echo = FALSE, message = FALSE}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+```
+
+
+```{R setting directories}
+output_figs <- paste0(here(), "/03_processing/10_integration/figs/comparing_objects/")
+```
+```{R functions}
+merge_list_seurat_join <- function(seurat_list) {
+    meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+    sample_ids <- meta_data$sample_fullname
+    seurat_obj_list <- map(sample_ids, function(id) {
+        index <- match(id, sample_ids)
+        seurat_obj <- seurat_list[[index]]
+        seurat_obj$sample <- id
+        seurat_obj
+    })
+    names(seurat_obj_list) <- sample_ids
+    seurat_obj <- merge(seurat_obj_list[[1]],
+        y = seurat_obj_list[2:length(seurat_obj_list)],
+        add.cell.ids = sample_ids
+    )
+    seurat_obj <- JoinLayers(seurat_obj)
+    return(seurat_obj)
+}
+
+merge_list_seurat_not_join <- function(seurat_list) {
+    meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+    sample_ids <- meta_data$sample_fullname
+    seurat_obj_list <- map(sample_ids, function(id) {
+        index <- match(id, sample_ids)
+        seurat_obj <- seurat_list[[index]]
+        seurat_obj$sample <- id
+        seurat_obj
+    })
+    names(seurat_obj_list) <- sample_ids
+    seurat_obj <- merge(seurat_obj_list[[1]],
+        y = seurat_obj_list[2:length(seurat_obj_list)],
+        add.cell.ids = sample_ids
+    )
+    return(seurat_obj)
+}
+umap_sample <- function(seurat_obj, reduction_name, title_name) {
+    umap_by_sample <- DimPlot(
+        object = seurat_obj,
+        reduction = reduction_name,
+        group.by = "sample",
+        pt.size = 0.1,
+        label = F, cols = nejm_colors
+    ) & theme(plot.title = element_text(size = 10)) &
+        NoAxes() & labs(title = title_name)
+}
+umap_feature_vec <- c(
+    "PTPRC", # Immune
+    "TOP2A", "MKI67", # Proliferative
+    ## Lymphoid
+    "CD3D", "CD3E", # T cells
+    "CD4", "CD8A", "CD8B", # distinction between 4 and 8
+    "FOXP3", "IL2RA", # T regs
+    "TOX2", # Tfh cell
+    "NCAM1", "KLRF1", # NK cells
+    "MS4A1", "CD79A", # B cells
+    # "TCL1A", # Naive B cells
+    # "BANK1", "BLK", # Memory/ activated B cells
+    "SDC1", "PRDM1", # Plasma cells
+    ## Myeloid
+    "S100A8", "CD14", # Monocytes
+    "CD163", "CD68", # Macrophage markers
+    "P2RY12", "SLC2A5", # microglia
+    "IL3RA", # pDCs
+    "CD1C", # DCs
+    "MAG", "MLANA" # other cells
+)
+```
+
+```{R original list of seperate objects}
+subset_list_immune <- lapply(list.files("03_processing/09_subset_annotation/specific_data", full.names = TRUE)[1:8], function(file) {
+    sample <- sub("\\..*", "", basename(file))
+    seurat_obj <- readRDS(file)
+})
+```
+
+
+```{R Joined}
+seurat_obj_join <- merge_list_seurat_join(subset_list_immune)
+reduction_name <- "merged_subset_immune_join"
+
+seurat_obj_join <- NormalizeData(seurat_obj_join)
+seurat_obj_join <- FindVariableFeatures(seurat_obj_join, selection.method = "vst", nfeatures = 2000, verbose = TRUE)
+all.genes <- rownames(seurat_obj_join)
+seurat_obj_join <- ScaleData(object = seurat_obj_join, features = all.genes, verbose = TRUE)
+seurat_obj_join <- RunPCA(object = seurat_obj_join, features = VariableFeatures(object = seurat_obj_join), nfeatures.print = 5, ndims.print = 1:2, reduction.name = paste0("pca_", reduction_name))
+# seurat_obj_join <- FindNeighbors(seurat_obj_join, dims = 1:10, reduction = paste0("pca_", reduction_name))
+# res_values <- c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.5)
+# seurat_obj_join <- FindClusters(seurat_obj_join, resolution = res_values, algorithm = 4)
+# seurat_obj_join <- RunUMAP(seurat_obj_join, dims = 1:10, reduction = paste0("pca_", reduction_name), reduction.name = paste0("umap.", reduction_name), verbose = TRUE)
+```
+
+
+```{R investigating joined fig.width = 10}
+Variable_genes_plot <- LabelPoints(
+    plot = VariableFeaturePlot(seurat_obj_join),
+    points = head(VariableFeatures(seurat_obj_join), 10),
+    repel = TRUE
+)
+grid.arrange(VariableFeaturePlot(seurat_obj_join) & NoLegend(), Variable_genes_plot & NoLegend(),
+    ncol = 2, nrow = 1
+)
+
+grob1 <- arrangeGrob(VariableFeaturePlot(seurat_obj_join) & NoLegend(), Variable_genes_plot & NoLegend(),
+    ncol = 2, nrow = 1
+)
+ggsave(grob1, file = paste0(output_figs, "joined_variable_features.png"))
+
+
+PCA_dim_plot <- DimPlot(seurat_obj_join, group.by = "sample", reduction = paste0("pca_", reduction_name), cols = nejm_colors)
+PCA_elbow <- ElbowPlot(seurat_obj_join, reduction = paste0("pca_", reduction_name))
+Genes_influence_PCA <- VizDimLoadings(seurat_obj_join,
+    dims = 1:5, reduction = paste0("pca_", reduction_name), nfeatures = 15
+)
+# ===================================== #
+grid.arrange(PCA_dim_plot, PCA_elbow,
+    ncol = 2, nrow = 1
+)
+grob2 <- arrangeGrob(PCA_dim_plot & NoLegend(), PCA_elbow,
+    ncol = 2, nrow = 1
+)
+ggsave(grob2, file = paste0(output_figs, "joined_PCA.png"))
+ggsave(PCA_dim_plot, file = paste0(output_figs, "joined_PCA_only.png"))
+
+Genes_influence_PCA
+ggsave(Genes_influence_PCA, file = paste0(output_figs, "joined_PCA_features.png"))
+
+heatmap <- DimHeatmap(seurat_obj_join, reduction = paste0("pca_", reduction_name), dims = 1:6, cells = 100, balanced = TRUE, fast = FALSE)
+
+ggsave(heatmap, file = paste0(output_figs, "joined_PCA_heatmap.png"))
+```
+
+```{R investigation after clustering}
+resolution_columns <- grep("^RNA_snn_res\\.",
+    colnames(seurat_obj_join@meta.data),
+    value = TRUE
+)
+
+umap_resolution_combined <- DimPlot(
+    object = seurat_obj_join,
+    reduction = paste0("umap.", reduction_name),
+    group.by = resolution_columns,
+    pt.size = 0.1,
+    label = TRUE
+) & NoLegend() &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+
+ggsave(umap_resolution_combined, file = paste0(output_figs, "joined_Umap_res.png"))
+
+features <- FeaturePlot(seurat_obj_join,
+    features = umap_feature_vec,
+    reduction = paste0("umap.", reduction_name),
+    ncol = 3
+) & NoAxes()
+ggsave(features, file = paste0(output_figs, "joined_Umap_features.png"), width = 20, height = 15)
+
+umap_by_sample <- DimPlot(
+    object = seurat_obj_join,
+    reduction = paste0("umap.", reduction_name),
+    group.by = "sample",
+    pt.size = 0.1,
+    label = F, cols = nejm_colors
+) & theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+
+ggsave(umap_by_sample, file = paste0(output_figs, "joined_Umap_sample.png"), height = 20, width = 20)
+```
+
+
+
+
+ 
+
+
+```{R Not joined}
+seurat_obj_not_join <- merge_list_seurat_not_join(subset_list_immune)
+reduction_name <- "merged_subset_immune_not_join"
+
+seurat_obj_not_join <- NormalizeData(seurat_obj_not_join)
+seurat_obj_not_join <- FindVariableFeatures(seurat_obj_not_join, selection.method = "vst", nfeatures = 2000, verbose = TRUE)
+hvf_info <- HVFInfo(seurat_obj_not_join)
+top_variable_genes <- hvf_info[order(hvf_info$variance.standardized, decreasing = TRUE), ]
+top_2000_genes <- rownames(top_variable_genes)[1:2000]
+VariableFeatures(seurat_obj_not_join) <- top_2000_genes
+all.genes <- rownames(seurat_obj_not_join)
+seurat_obj_not_join <- ScaleData(object = seurat_obj_not_join, features = all.genes, verbose = TRUE)
+seurat_obj_not_join <- RunPCA(
+    object = seurat_obj_not_join, nfeatures.print = 5, ndims.print = 1:2, reduction.name = paste0("pca_", reduction_name)
+)
+seurat_obj_not_join <- FindNeighbors(seurat_obj_not_join, dims = 1:10, reduction = paste0("pca_", reduction_name))
+res_values <- c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.5)
+seurat_obj_not_join <- FindClusters(seurat_obj_not_join, resolution = res_values, algorithm = 4)
+seurat_obj_not_join <- RunUMAP(seurat_obj_not_join, dims = 1:10, reduction = paste0("pca_", reduction_name), reduction.name = paste0("umap.", reduction_name), verbose = TRUE)
+```
+
+```{R investigating not_joined fig.width = 10}
+Variable_genes_plot <- LabelPoints(
+    plot = VariableFeaturePlot(seurat_obj_not_join),
+    points = head(VariableFeatures(seurat_obj_not_join), 10),
+    repel = TRUE
+)
+grid.arrange(VariableFeaturePlot(seurat_obj_not_join) & NoLegend(), Variable_genes_plot & NoLegend(),
+    ncol = 2, nrow = 1
+)
+
+grob1 <- arrangeGrob(VariableFeaturePlot(seurat_obj_not_join) & NoLegend(), Variable_genes_plot & NoLegend(),
+    ncol = 2, nrow = 1
+)
+ggsave(grob1, file = paste0(output_figs, "not_joined_variable_features.png"))
+
+
+PCA_dim_plot <- DimPlot(seurat_obj_not_join, , group.by = "sample", reduction = paste0("pca_", reduction_name), cols = nejm_colors)
+PCA_elbow <- ElbowPlot(seurat_obj_not_join, reduction = paste0("pca_", reduction_name))
+Genes_influence_PCA <- VizDimLoadings(seurat_obj_not_join,
+    dims = 1:5, reduction = paste0("pca_", reduction_name), nfeatures = 15
+)
+# ===================================== #
+grid.arrange(PCA_dim_plot, PCA_elbow,
+    ncol = 2, nrow = 1
+)
+grob2 <- arrangeGrob(PCA_dim_plot & NoLegend(), PCA_elbow,
+    ncol = 2, nrow = 1
+)
+ggsave(grob2, file = paste0(output_figs, "not_joined_PCA.png"))
+ggsave(PCA_dim_plot, file = paste0(output_figs, "not_joined_PCA_only.png"))
+
+Genes_influence_PCA
+ggsave(Genes_influence_PCA, file = paste0(output_figs, "not_joined_PCA_features.png"))
+
+heatmap <- DimHeatmap(seurat_obj_not_join, reduction = paste0("pca_", reduction_name), dims = 1:6, cells = 100, balanced = TRUE, fast = FALSE)
+
+ggsave(heatmap, file = paste0(output_figs, "not_joined_PCA_heatmap.png"))
+```
+
+```{R investigation after clustering not joined}
+resolution_columns <- grep("^RNA_snn_res\\.",
+    colnames(seurat_obj_not_join@meta.data),
+    value = TRUE
+)
+
+umap_resolution_combined <- DimPlot(
+    object = seurat_obj_not_join,
+    reduction = paste0("umap.", reduction_name),
+    group.by = resolution_columns,
+    pt.size = 0.1,
+    label = TRUE
+) & NoLegend() &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+
+ggsave(umap_resolution_combined, file = paste0(output_figs, "not_joined_Umap_res.png"))
+
+features <- FeaturePlot(seurat_obj_not_join,
+    features = umap_feature_vec,
+    reduction = paste0("umap.", reduction_name),
+    ncol = 3
+) & NoAxes()
+ggsave(features, file = paste0(output_figs, "not_joined_Umap_features.png"), width = 20, height = 15)
+
+
+umap_by_sample <- DimPlot(
+    object = seurat_obj_not_join,
+    reduction = paste0("umap.", reduction_name),
+    group.by = "sample",
+    pt.size = 0.1,
+    label = F, cols = nejm_colors
+) & theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+
+ggsave(umap_by_sample, file = paste0(output_figs, "not_joined_Umap_sample.png"), height = 20, width = 20)
+```
+
+```{R}
+sessionInfo()
+```

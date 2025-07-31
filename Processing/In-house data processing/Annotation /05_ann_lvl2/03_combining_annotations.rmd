@@ -1,0 +1,148 @@
+# Tomorrow,
+###  1. Check with Juan the markers of the objects to really confirm my findings.
+###  2. Overlap all of the previous annotations in the bigger objects.
+###  3. Compare the findings of annotation with the results in wetlab, do things correlate with the values found?
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+# install.packages("languageserver")
+```
+
+```{R general functions, eval =T}
+library(here)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+output_figs <- "03_processing/13_phase_6/figs/14_04_2025/"
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+source("02_scripts/04_integration/functions.R")
+library(dittoSeq)
+```
+
+```{R immune cells, include = TRUE, echo = TRUE, fig.width = 20, fig.height = 20}
+tseur <- readRDS( file = "03_processing/12_phase_5/data/Tcell_seurat_annotated.rds")
+reduction_name <- "Tcell"
+DimPlot(tseur, reduction = paste0("umap.harmony.",reduction_name),pt.size = 0.1, label = T, group.by = "ann_lvl_1_filtered") & NoAxes()
+DimPlot(tseur, reduction = paste0("umap.harmony.",reduction_name),pt.size = 0.1, label = T, group.by = "ann_lvl_2_Tcells") & NoAxes()
+
+
+myeseur <- readRDS( file ="03_processing/12_phase_5/data/Myeloid_seurat_annotated.rds")
+reduction_name <- "Myeloid"
+DimPlot(myeseur, reduction = paste0("umap.harmony.",reduction_name),pt.size = 0.1, label = T, group.by = "ann_lvl_1_filtered") & NoAxes()
+DimPlot(myeseur, reduction = paste0("umap.harmony.",reduction_name),pt.size = 0.1, label = T, group.by = "ann_lvl_2_Myeloids") & NoAxes()
+colnames(myeseur@meta.data)
+
+seurat_obj <- readRDS(file = "03_processing/11_phase_4/data/immune_subset_without_doubs_annotated.rds")
+reduction_name <- "immune_no_doub"
+DimPlot(seurat_obj, reduction = paste0("umap.harmony.",reduction_name),pt.size = 0.1, label = T, group.by = "ann_lvl_1") & NoAxes()
+
+# Idents(seurat_obj) <- seurat_obj@meta.data$ann_lvl_1_filtered
+```
+
+```{R}
+ # Adding the adjusted names based on annotation with Juan:ann_lvl_1_filtered
+ Idents(object = myeseur) <- "RNA_snn_res.0.5"
+
+new.cluster.ids <- c("Monocytes", "Macrophages", "Neutrophils", "Macrophage_OTOA", "Doublets", "CD1CA+_A", "Monocytic_MDSCs", "Microglia", "pDCs", "Macrophage_SPP1", "cDC1","mregDCs")
+names(new.cluster.ids) <- levels(myeseur)
+myeseur <- RenameIdents(myeseur, new.cluster.ids)
+myeseur[["ann_lvl_2_Myeloids_final"]] <- Idents(myeseur)
+
+Idents(object = tseur) <- "RNA_snn_res.0.9"
+
+new.cluster.ids_3 <- c("Exhausted_CD8", "Proliferating_CD8_1", "CD8_cytotoxic", "Bad_Quality", "Central_memory_2", "Proliferating_2", "Central_memory_CD4", "CD8_exhausted_2", "Tregs_1", "Tfh_cells", "Proliferating_CD4_1","Tregs_2","MAIT_NKT")
+names(new.cluster.ids_3) <- levels(tseur)
+tseur <- RenameIdents(tseur, new.cluster.ids_3)
+tseur[["ann_lvl_2_Tcells_final"]] <- Idents(tseur)
+
+```
+
+```{R preparing metadata for addition}
+# unique(Idents(seurat_obj))
+tseur@meta.data$ann_lvl_2 <- tseur@meta.data$ann_lvl_2_Tcells_final
+myeseur@meta.data$ann_lvl_2 <- myeseur@meta.data$ann_lvl_2_Myeloids_final
+cells_meta_trim_t <- subset(tseur@meta.data, select = c("ann_lvl_2"))
+cells_meta_trim_m<- subset(myeseur@meta.data, select = c("ann_lvl_2"))
+meta_data_filtered <- subset(seurat_obj@meta.data, select = c("ann_lvl_1_filtered"))
+remaining_cell_ann <- meta_data_filtered %>%
+  filter(ann_lvl_1_filtered %in% c("Bcells", "PlasmaCells","Bad-quality")) %>% droplevels()
+remaining_cell_ann$ann_lvl_2 <- remaining_cell_ann$ann_lvl_1_filtered
+remaining_cell_ann$ann_lvl_1_filtered <- NULL
+```
+
+
+```{R adding metadata}
+meta_data_to_add <- NULL
+meta_data_to_add <- rbind(cells_meta_trim_t,cells_meta_trim_m)
+meta_data_to_add <- rbind(meta_data_to_add,remaining_cell_ann)
+seurat_obj <- AddMetaData(seurat_obj,meta_data_to_add)
+table(seurat_obj@meta.data$ann_lvl_2)
+DimPlot(seurat_obj, reduction = paste0("umap.harmony.",reduction_name),pt.size = 0.1, label = T, group.by = "ann_lvl_2") & NoAxes()
+dittoDimPlot(seurat_obj,
+    var = "ann_lvl_2",
+    do.label = T,
+    reduction.use = paste0("umap.harmony.",reduction_name),
+    # do.contour = TRUE, contour.color = 'black'   
+    ) & NoAxes()
+ggsave(filename=paste0(output_figs,"umap_all_cells.png"), width = 15, height = 15)
+dittoDimPlot(seurat_obj,
+    var = "ann_lvl_1",
+    do.label = T,
+    reduction.use = paste0("umap.harmony.",reduction_name),
+    # do.contour = TRUE, contour.color = 'black'   
+    ) & NoAxes()
+ggsave(filename=paste0(output_figs,"umap_lvl_1.png"), width = 15, height = 15)  
+
+
+dittoBarPlot(seurat_obj, "ann_lvl_2", group.by = "primary_sample")
+
+ggsave(filename=paste0(output_figs,"barplot_lvl_2.png"), width = 15, height = 15)  
+
+
+dittoBarPlot(seurat_obj, "primary_sample", group.by = "ann_lvl_2",color.panel = nejm_colors)
+ggsave(filename=paste0(output_figs,"barplot_primary_sample.png"), width = 15, height = 15)  
+
+
+cluster_order <- match(levels(seurat_obj@meta.data[["ann_lvl_2"]]), metaLevels("ann_lvl_2", seurat_obj))
+
+
+dittoBarPlot(seurat_obj, "primary_sample", group.by = "ann_lvl_2",color.panel = nejm_colors,scale = "count",  x.reorder = cluster_order)
+ggsave(filename=paste0(output_figs,"barplot_sample_count.png"), width = 15, height = 15)  
+
+dittoBarPlot(seurat_obj, "primary_sample", group.by = "ann_lvl_2",color.panel = nejm_colors,scale = "count")
+
+ggsave(filename=paste0(output_figs,"barplot_sample_unordered.png"), width = 15, height = 15)  
+
+```
+
+
+
+
+```{R saving object,eval = T}
+saveRDS(object = seurat_obj, file ="03_processing/12_phase_5/data/integrated_immune_annotated_lvl2.rds")
+```
+
+```{R rmd, eval = F}
+rmarkdown::render(
+    input = paste0("02_scripts/05_ann_lvl2/03_combining_annotations.rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits",
+    output_file = paste0("03_combining_annotations.html")
+)
+```
+
+

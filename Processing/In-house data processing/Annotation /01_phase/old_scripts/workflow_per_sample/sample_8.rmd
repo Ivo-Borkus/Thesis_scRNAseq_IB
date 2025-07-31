@@ -1,0 +1,476 @@
+
+---
+title: "Analysis of singlecellRNAseq sample 105946-002-005"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+library(DoubletFinder)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/QC_per_sample/sample_1.rmd")
+```
+
+# Parameters
+
+```{R Parameters, echo = TRUE}
+sample <- "105946-002-005"
+minUMI <- 500
+maxUMI <- NA
+minfeat <- 300
+maxfeat <- 10000
+maxmt <- 20
+set.seed(91774)
+```
+# Chaper 1: Basic QC
+
+## Loading in data and running scrublet
+```{R Loading data, echo = FALSE, message = FALSE}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+index <- match(sample, meta_data$sample_name)
+data_dir <- here("01_data", meta_data$sample_fullname[index], sample, "outs/per_sample_outs", sample, "count/sample_filtered_feature_bc_matrix")
+count_data <- Read10X(data.dir = data_dir)
+seurat_obj <- CreateSeuratObject(count_data)
+seurat_obj[["percent_mt"]] <- PercentageFeatureSet(seurat_obj, pattern = "^MT-")
+```
+
+
+```{R adjusting minimal settings, echo = FALSE, include = FALSE, eval = TRUE}
+maxUMI <- max(seurat_obj@meta.data$nCount_RNA) + 1
+# minUMI <- ifelse(minUMI > min(seurat_obj@meta.data$nCount_RNA),
+#     minUMI, min(seurat_obj@meta.data$nCount_RNA)
+# )
+# minfeat <- ifelse(minfeat > min(seurat_obj@meta.data$nFeature_RNA),
+#     minfeat, min(seurat_obj@meta.data$nFeature_RNA)
+# )
+```
+
+```{R scrublet, include = FALSE}
+library(rscrublet)
+library(Matrix)
+
+scrublet <- function(seurat_obj) {
+    count_matrix <- t(as(seurat_obj@assays$RNA$counts, "TsparseMatrix"))
+    print(count_matrix[1:2, 1:3])
+    scrr <- scrub_doublets(E_obs = count_matrix, expected_doublet_rate = 0.06, min_counts = 2, min_cells = 3, min_gene_variability_pctl = 85, n_prin_comps = 30)
+    scrr <- call_doublets(scrr)
+    # plot_doublet_histogram(scrr)
+    seurat_obj$doublet.score <- scrr$doublet_scores_obs
+    seurat_obj$predicted.doublets <- scrr$predicted_doublets
+    # print(FeaturePlot(seurat_obj, features = "doublet.score", cols = c("gray", "red")))
+    return(seurat_obj)
+}
+seurat_obj <- scrublet(seurat_obj)
+```
+
+## Performing basic QC using violin and scatter plots for visualisation
+```{R QC violin plots, echo = FALSE, include = FALSE}
+nejm_colors <- paletteer::paletteer_d(
+    "ggsci::default_nejm", length(levels(as.factor(meta_data$sample_name)))
+)
+qc_count_line <- VlnPlot(seurat_obj,
+    features = c("nCount_RNA"),
+    log = FALSE,
+    cols = nejm_colors[index],
+    pt.size = 0
+) & geom_hline(yintercept = minUMI, color = "red") &
+    geom_hline(yintercept = maxUMI, color = "red") &
+    NoLegend() &
+    theme(axis.text.x = element_blank(), plot.title = element_blank())
+
+
+qc_feature_line <- VlnPlot(seurat_obj,
+    features = c("nFeature_RNA"),
+    log = FALSE,
+    cols = nejm_colors[index],
+    pt.size = 0
+) + theme(axis.text.x = element_blank(), plot.title = element_blank()) +
+    geom_hline(yintercept = minfeat, color = "red") +
+    geom_hline(yintercept = maxfeat, color = "red") &
+    NoLegend()
+
+qc_mt_line <- VlnPlot(seurat_obj,
+    features = c("percent_mt"),
+    log = FALSE,
+    cols = nejm_colors[index],
+    pt.size = 0
+) + theme(axis.text.x = element_blank(), plot.title = element_blank()) +
+    geom_hline(yintercept = maxmt, color = "red") &
+    NoLegend()
+```
+
+```{R Histogram plots, echo = FALSE, include=FALSE}
+hist_count_line <- ggplot(
+    data = seurat_obj@meta.data,
+    mapping = aes(x = nCount_RNA)
+) +
+    geom_density(fill = nejm_colors[index]) +
+    labs(title = "Distribution of of UMI count in cells") +
+    geom_vline(xintercept = minUMI, color = "red") +
+    geom_vline(xintercept = maxUMI, color = "red") +
+    theme_minimal() +
+    scale_x_log10()
+
+hist_feat_line <- ggplot(
+    data = seurat_obj@meta.data,
+    mapping = aes(x = nFeature_RNA)
+) +
+    geom_density(fill = nejm_colors[index]) +
+    labs(title = "Distribution of unique genes in cells") +
+    geom_vline(xintercept = minfeat, color = "red") +
+    geom_vline(xintercept = maxfeat, color = "red") +
+    theme_minimal() +
+    scale_x_log10()
+
+hist_mt_line <- ggplot(
+    data = seurat_obj@meta.data,
+    mapping = aes(x = percent_mt)
+) +
+    geom_density(fill = nejm_colors[index]) +
+    labs(title = "Distribution of MT percentage in cells") +
+    geom_vline(xintercept = maxmt, color = "red") +
+    theme_minimal() +
+    scale_x_log10()
+```
+
+```{R Scatter plots, include = FALSE}
+umi_v_mt_lines <- ggplot(
+    data = seurat_obj@meta.data,
+    mapping = aes(x = nCount_RNA, y = percent_mt)
+) +
+    geom_point() +
+    geom_hline(yintercept = maxmt, color = "red") +
+    geom_vline(xintercept = minUMI, color = "red") +
+    geom_vline(xintercept = maxUMI, color = "red") +
+    scale_x_log10() +
+    labs(
+        x = "UMI count", y = "Mitochondrial %"
+    )
+
+
+
+umi_v_genes_mt_col <- ggplot(
+    data = seurat_obj@meta.data,
+    mapping = aes(
+        x = nCount_RNA, y = nFeature_RNA,
+        color = percent_mt,
+        size = percent_mt
+    )
+) +
+    geom_point() +
+    geom_hline(yintercept = minfeat, color = "red") +
+    geom_hline(yintercept = maxfeat, color = "red") +
+    geom_vline(xintercept = minUMI, color = "red") +
+    geom_vline(xintercept = maxUMI, color = "red") +
+    scale_x_log10() +
+    scale_y_log10() +
+    labs(
+        x = "UMI count", y = "Unique genes"
+    )
+
+
+umi_v_genes_doublet_col <- ggplot(
+    data = seurat_obj@meta.data,
+    mapping = aes(
+        x = nCount_RNA, y = nFeature_RNA,
+        color = doublet.score,
+        size = doublet.score
+    )
+) +
+    geom_point() +
+    geom_hline(yintercept = minfeat, color = "red") +
+    geom_hline(yintercept = maxfeat, color = "red") +
+    geom_vline(xintercept = minUMI, color = "red") +
+    geom_vline(xintercept = maxUMI, color = "red") +
+    scale_x_log10() +
+    scale_y_log10() +
+    labs(
+        x = "UMI count", y = "Unique genes"
+    )
+```
+
+## Plotting QC of sample
+
+### Distribution plots
+```{R plotting_1, fig.align="center", echo = FALSE,fig.width=10,fig.height=10, message  = FALSE}
+grid.arrange(hist_count_line, qc_count_line,
+    hist_feat_line, qc_feature_line,
+    hist_mt_line, qc_mt_line,
+    ncol = 2, nrow = 3
+)
+```
+
+### Scatter Plots
+
+```{R plotting_2,  echo = FALSE,fig.width=20,fig.height=15, message  = FALSE}
+grid.arrange(umi_v_mt_lines + labs(title = paste0("Sample: ", sample, " UMI count vs unique gene count in cells")),
+    umi_v_genes_mt_col + labs(title = paste0("Sample: ", sample, " UMI count vs MT percentage")),
+    umi_v_genes_doublet_col + labs(title = paste0("Sample: ", sample, " UMI count vs unique gene count in cells coloured by scrublet-score")),
+    ncol = 2, nrow = 2
+)
+```
+
+## Subsetting data based on the parameters
+
+```{R Subsetting, echo = FALSE, eval = TRUE}
+total_cells <- dim(seurat_obj)[2]
+
+seurat_obj <- subset(
+    seurat_obj,
+    nCount_RNA > minUMI &
+        nCount_RNA < maxUMI &
+        nFeature_RNA > minfeat &
+        nFeature_RNA < maxfeat &
+        percent_mt < maxmt
+)
+
+subset_cells <- dim(seurat_obj)[2]
+data_removed <- 100 - ((subset_cells / total_cells) * 100)
+
+###
+
+cat(paste0("Total amount of cells: ", total_cells, "\n"))
+cat(paste0("Percentage of data removed: ", round(data_removed, 2), "%", "\n"))
+cat(paste0("Amount of cells removed: ", total_cells - subset_cells, "\n"))
+cat(paste0("Cells remaining: ", subset_cells))
+```
+
+# Chapter 2: Seurat workflow on filtered dataset
+
+## Normalisation
+```{R prenorm plot , echo = FALSE}
+violin_preNorm <- VlnPlot(seurat_obj, features = "GAPDH") + NoLegend()
+```
+```{R Normalisation, echo = TRUE, include = FALSE}
+seurat_obj <- NormalizeData(
+    object = seurat_obj,
+    normalization.method = "LogNormalize",
+    scale.facor = 10000
+)
+```
+```{R postnorm plot , echo = FALSE}
+violin_postNorm <- VlnPlot(seurat_obj, features = "GAPDH") + NoLegend()
+```
+
+```{R plotting_basic_QC, fig.align="center", echo = FALSE,fig.width=10,fig.height=5, message  = FALSE}
+grid.arrange(violin_preNorm, violin_postNorm,
+    ncol = 2, nrow = 1
+)
+```
+
+## Finding variable features
+```{R Finding variable features, echo = TRUE, include = FALSE}
+seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = "vst", nfeatures = 2000)
+all.genes <- rownames(seurat_obj)
+seurat_obj <- ScaleData(object = seurat_obj, features = all.genes)
+```
+
+```{R variable_feature plot , echo = FALSE,message= FALSE, fig.width = 10}
+Variable_genes_plot <- LabelPoints(
+    plot = VariableFeaturePlot(seurat_obj),
+    points = head(VariableFeatures(seurat_obj), 10),
+    repel = TRUE
+)
+grid.arrange(VariableFeaturePlot(seurat_obj) & NoLegend(), Variable_genes_plot & NoLegend(),
+    ncol = 2, nrow = 1
+)
+```
+
+## Running PCA dim reduction
+```{R running PCA, echo=TRUE, include = TRUE}
+seurat_obj <- RunPCA(
+    object = seurat_obj,
+    features = VariableFeatures(object = seurat_obj),
+    nfeatures.print = 5, ndims.print = 1:2
+)
+saveRDS(seurat_obj, file = paste0(here(), "/03_processing/04_PCA/data/subsets/", sample, "_PCA.rds"))
+```
+### Plotting PCA dim reduction
+```{R PCA plots before clustering, fig.align="center", echo = TRUE, include = TRUE,fig.width=10}
+PCA_dim_plot <- DimPlot(seurat_obj, reduction = "pca") + NoLegend()
+PCA_elbow <- ElbowPlot(seurat_obj)
+Genes_influence_PCA <- VizDimLoadings(seurat_obj,
+    dims = 1:5, reduction = "pca", nfeatures = 15
+)
+# ===================================== #
+grid.arrange(PCA_dim_plot, PCA_elbow,
+    ncol = 2, nrow = 1
+)
+```
+
+```{R, echo = TRUE, fig.height=10,fig.width=10}
+Genes_influence_PCA
+DimHeatmap(seurat_obj, dims = 1:6, cells = 100, balanced = TRUE)
+```
+
+## Clustering cells
+```{R clustering, include = FALSE, echo = TRUE}
+seurat_obj <- FindNeighbors(seurat_obj, dims = 1:10, reduction = "pca")
+saveRDS(seurat_obj, file = paste0(here(), "/03_processing/05_Neighbours/data/subsets/", sample, "_NN.rds"))
+
+seurat_obj <- FindClusters(seurat_obj, resolution = 0.5, algorithm = 4, cluster.name = "unintegrated_clusters")
+seurat_obj <- RunUMAP(seurat_obj, dims = 1:10, reduction = "pca", reduction.name = "umap.unintegrated")
+saveRDS(seurat_obj, file = paste0(here(), "/03_processing/06_Clustering/data/subsets/", sample, "_clusters.rds"))
+```
+
+
+```{R plotting PCAs after clustering,eval = FALSE, fig.align="center",fig.width=10,fig.height=10, echo = FALSE, message  = FALSE}
+### Plotting PCA QC plots
+
+grid.arrange(DimPlot(seurat_obj, reduction = "pca") + NoLegend(), ElbowPlot(seurat_obj),
+    ncol = 2, nrow = 1
+)
+VizDimLoadings(seurat_obj,
+    dims = 1:5, reduction = "pca", nfeatures = 15
+)
+DimHeatmap(seurat_obj, dims = 1:6, cells = 100, balanced = TRUE)
+```
+
+### Plotting PCA feature plots
+```{R feature pcas, echo = TRUE}
+Feature_mt <- FeaturePlot(seurat_obj, features = "percent_mt", reduction = "pca", pt.size = 0.1)
+Feature_count <- FeaturePlot(seurat_obj, features = "nCount_RNA", reduction = "pca", pt.size = 0.1)
+Feature_ds <- FeaturePlot(seurat_obj, features = "doublet.score", reduction = "pca", pt.size = 0.1)
+Feature_feat <- FeaturePlot(seurat_obj, features = "nFeature_RNA", reduction = "pca", pt.size = 0.1)
+```
+
+```{R plotting feature pcas, fig.align="center", echo = FALSE,fig.width=10,fig.height=10, message  = FALSE}
+PCA_dim_plot_with_clusters <- DimPlot(seurat_obj, reduction = "pca")
+
+grid.arrange(Feature_mt, Feature_count,
+    Feature_ds, Feature_feat, PCA_dim_plot_with_clusters,
+    ncol = 2, nrow = 3
+)
+```
+
+
+## Umap projection of data
+```{R umap plot, ig.align="center", echo = FALSE,fig.width=10,fig.height=10, message  = FALSE}
+umap <- DimPlot(
+    object = seurat_obj,
+    label = TRUE, reduction = "umap.unintegrated", pt.size = 0.05
+) &
+    theme(plot.title = element_text(size = 10)) & NoAxes()
+# "seurat_clusters"
+umap
+```
+
+```{R umap feature plots}
+Feature_mt_umap <- FeaturePlot(seurat_obj, features = "percent_mt", reduction = "umap.unintegrated") & NoAxes()
+Feature_count_umap <- FeaturePlot(seurat_obj, features = "nCount_RNA", reduction = "umap.unintegrated") & NoAxes()
+Feature_ds_umap <- FeaturePlot(seurat_obj, features = "doublet.score", reduction = "umap.unintegrated") & NoAxes()
+Feature_feat_umap <- FeaturePlot(seurat_obj, features = "nFeature_RNA", reduction = "umap.unintegrated") & NoAxes()
+```
+
+```{R plotting feature umaps, fig.align="center", echo = FALSE,fig.width=10,fig.height=10, message  = FALSE}
+grid.arrange(Feature_mt_umap, Feature_count_umap,
+    Feature_ds_umap, Feature_feat_umap,
+    ncol = 2, nrow = 2
+)
+```
+
+# Cell cycle influence on clustering
+
+## Cell cycle genes
+
+- PCNA expressed in S fase 
+- TOP2A, expressed in G2 and M phase
+- MCM6, expressed throughout cell cycle (tumour cells)
+- MKI67, expressed in G2 and M phase
+```{R Cell cycle, echo = FALSE}
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+seurat_obj <- CellCycleScoring(seurat_obj, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+
+## PCNA Large growth in S fase of transcription
+## TOP2A, expressed in G2 and M phase
+## MKI67, expressed in G2 and M phase
+cycle_genes_plot <- FeaturePlot(seurat_obj, features = c("PCNA", "TOP2A", "MCM6", "MKI67"), ncol = 2, pt.size = 0.01, order = TRUE) ## Common cell cycle related genes
+## CC.difference is useful when you want so still differentiate between cell-cycling and quiescent cells, but not within the cell-cycle.
+seurat_obj$CC.Difference <- seurat_obj$S.Score - seurat_obj$G2M.Score
+score_plot <- FeaturePlot(seurat_obj, features = c("S.Score", "G2M.Score"), ncol = 2, , pt.size = 0.001)
+cycle_genes_plot & theme(plot.title = element_text(size = 10)) & NoAxes()
+```
+
+## Cell cycle scores
+```{R Plotting cell-cycle scores, echo = FALSE}
+score_plot & theme(plot.title = element_text(size = 10)) & NoAxes()
+```
+
+# Doubletfinder analysis on processed data
+```{R Doubletfinder, echo = FALSE, include = FALSE}
+sweep_seurat <- paramSweep(seurat_obj, PCs = 1:10, sct = FALSE)
+sweep_stats_seurat <- summarizeSweep(sweep_seurat, GT = FALSE)
+
+# mean-variance-normalized bimodality coefficient
+bcmvn_seurat <- find.pK(sweep_stats_seurat)
+bcmvn_seurat$pK <- as.numeric(as.character(bcmvn_seurat$pK))
+BCmetric <- bcmvn_seurat$BCmetric
+pK_choose <- bcmvn_seurat$pK[which(BCmetric %in% max(BCmetric))]
+
+pk_optimisation_plot <- ggplot(bcmvn_seurat, aes(x = pK, y = BCmetric)) +
+    geom_point(color = "blue") +
+    geom_line(color = "black") +
+    geom_vline(xintercept = pK_choose, linetype = "dashed", color = "red", linewidth = 1) +
+    ggtitle("The BCmvn distributions") +
+    annotate("text", x = pK_choose, y = max(BCmetric), label = as.character(pK_choose), color = "red", hjust = -0.1)
+
+homotyp <- modelHomotypic(Idents(seurat_obj)) ## ex: annotations <- seu_kidney@meta.data$ClusteringResults
+nExp_poi <- round(0.075 * nrow(seurat_obj@meta.data)) ## Assuming 7.5% doublet formation rate - tailor for your dataset
+nExp_poi.adj <- round(nExp_poi * (homotyp))
+
+
+seurat_obj <- doubletFinder(seurat_obj, PCs = 1:10, pN = 0.25, pK = pK_choose, nExp = nExp_poi, reuse.pANN = FALSE, sct = FALSE)
+seurat_obj <- doubletFinder(seurat_obj, PCs = 1:10, pN = 0.25, pK = pK_choose, nExp = nExp_poi.adj, reuse.pANN = FALSE, sct = FALSE)
+```
+
+```{R Plotting doublet_finder, fig.align="center", echo = FALSE,fig.width=10,fig.height=10, message  = FALSE}
+doublet_score_plot <- FeaturePlot(seurat_obj, features = "doublet.score") & NoAxes() & labs(title = "Scrublet scores")
+doublet_finder_score <- FeaturePlot(seurat_obj, features = paste0("pANN_0.25_", pK_choose, "_", nExp_poi.adj)) & NoAxes() & labs(title = "Doublet finder score")
+classifications_string <- DimPlot(seurat_obj, group.by = paste0("DF.classifications_0.25_", pK_choose, "_", nExp_poi)) & NoAxes()
+classifications_lenient <- DimPlot(seurat_obj, group.by = paste0("DF.classifications_0.25_", pK_choose, "_", nExp_poi.adj)) & NoAxes()
+
+grid.arrange(
+    doublet_score_plot,
+    doublet_finder_score,
+    classifications_string,
+    classifications_lenient,
+    nrow = 2, ncol = 2
+)
+```
+
+```{R saving seurat, eval = TRUE}
+saveRDS(seurat_obj, file = paste0("03_processing/01_QC/data/subsets/total_pipeline/", sample, ".rds"))
+```
+
+
+```{R, echo = FALSE, eval = FALSE}
+rmarkdown::render(
+    input = paste0("02_scripts/workflow_per_sample/sample_", index, ".rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits/workflow_per_sample",
+    output_file = paste0("sample_", index, "_total_workflow.html")
+)
+```

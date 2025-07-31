@@ -1,0 +1,227 @@
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+# install.packages("languageserver")
+```
+
+```{R general functions, eval =T}
+library(here)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+output_figs <- "03_processing/12_phase_5/figs/Myeloid/batch_job/"
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+source("02_scripts/04_integration/functions.R")
+```
+
+```{R, include = TRUE, echo = TRUE}
+myeseur <- readRDS(file = "03_processing/12_phase_5/data/Myeloid_seurat.rds")
+reduction_name <- "Myeloid"
+```
+
+```{R, excel function}
+excel_sheet <- function(markers, output_dir, name) {
+    library(writexl)
+    print(paste0("Output will be put in: ", output_dir, name, ".xlsx"))
+    if (file.exists(output_dir)) {
+        markers %>%
+            arrange(cluster, desc(avg_log2FC)) %>% # Arrange within each cluster
+            group_by(cluster) %>%
+            select(cluster, pct.1, pct.2, p_val, p_val_adj, avg_log2FC, gene) %>%
+            group_split() %>% # Split into list by 'cluster'
+            setNames(unique(markers$cluster)) %>% # Name list elements
+            writexl::write_xlsx(paste0(output_dir, name, ".xlsx"))
+    } else {
+        stop("Directory does not exist")
+    }
+}
+output_excel <- "03_processing/12_phase_5/data/excels/"
+```
+
+
+```{R}
+umap_specific_res <- function(seurat_obj, res) {
+    Idents(object = seurat_obj) <- paste0("RNA_snn_res.",res)
+    umap_res <- DimPlot(
+        object = seurat_obj,
+        reduction = paste0("umap.harmony.", reduction_name),
+        pt.size = 0.1,
+        label = TRUE
+    ) &
+        theme(plot.title = element_text(size = 10)) &
+        NoAxes()
+}
+Idents(object = myeseur) <- "RNA_snn_res.0.05"
+vln <- VlnPlot(myeseur, features = c("percent_mt", "nCount_RNA", "doublet.score", "nFeature_RNA"), ncol = 2, pt.size = 0.1)
+ggsave(vln, file = paste0(output_figs, "Myeloids_res0.05_stats.png"))
+myeseur.markers <- FindAllMarkers(
+    object = myeseur,
+    only.pos = TRUE, min.pct = 0.25,
+    logfc.threshold = 0.25
+)
+excel_sheet(myeseur.markers, output_excel, "Myeloid_integrated_res.0.05")
+
+Idents(object = myeseur) <- "RNA_snn_res.0.5"
+umap_res <- DimPlot(
+    object = myeseur,
+    reduction = paste0("umap.harmony.", reduction_name),
+    pt.size = 0.1,
+    label = TRUE
+) &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+ggsave(umap_res, file = paste0(output_figs, "umap_res0.5_unnanotated.png"))
+vln <- VlnPlot(myeseur, features = c("percent_mt", "nCount_RNA", "doublet.score", "nFeature_RNA"), ncol = 2, pt.size = 0.1)
+ggsave(vln, file = paste0(output_figs, "Myeloids_res0.5_stats.png"),width = 15, height = 15)
+
+myeseur.markers <- FindAllMarkers(
+    object = myeseur,
+    only.pos = TRUE, min.pct = 0.25,
+    logfc.threshold = 0.25
+)
+excel_sheet(myeseur.markers, output_excel, "Myeloid_integrated_res.0.5")
+```
+
+```{R adding cell annotations, echo = TRUE}
+Idents(object = myeseur) <- "RNA_snn_res.0.5"
+
+new.cluster.ids <- c("Monocytes", "Macrophages", "Neutrophils", "Macrophage_OTOA", "Doublets", "CD1CA+_A", "CD1CA+_B", "Microglia", "pDCs", "DC4_CD1C-", "cDC1","mregDCs")
+names(new.cluster.ids) <- levels(myeseur)
+myeseur <- RenameIdents(myeseur, new.cluster.ids)
+myeseur[["ann_lvl_2_Myeloids"]] <- Idents(myeseur)
+```
+
+```{R}
+myeseur@meta.data$primary_sample <- factor(myeseur@meta.data$primary_sample, levels = c(
+    primary_sample
+))
+colnames(myeseur@meta.data)
+myeseur@meta.data %>%
+    count(primary_sample, ann_lvl_2_Myeloids) %>%
+    group_by(ann_lvl_2_Myeloids) %>%
+    mutate(composition = n / sum(n)) %>%
+    ggplot(aes(x = ann_lvl_2_Myeloids, y = composition, fill = primary_sample)) +
+    geom_bar(position = "stack", stat = "identity") +
+    scale_fill_manual(values = nejm_colors) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, face = "bold", size = 14, color = "black")) +
+    labs(title = "Composition of Myeloids per sample for resolution 0.5 annotated") -> cluster_comp_plot
+ggsave(cluster_comp_plot, file = paste0(output_figs, "cluster_Myeloids_annotated.png"))
+
+myeseur@meta.data %>%
+    count(primary_sample, ann_lvl_2_Myeloids) %>%
+    group_by(primary_sample) %>%
+    mutate(composition = n / sum(n)) %>%
+    ggplot(aes(x = primary_sample, y = composition, fill = ann_lvl_2_Myeloids)) +
+    geom_bar(position = "stack", stat = "identity") +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, face = "bold", size = 14, color = "black")) +
+    labs(title = "Composition of Myeloids per sample for resolution 0.5 annotated") -> cluster_comp_plot_sample
+ggsave(cluster_comp_plot_sample, file = paste0(output_figs, "cluster_Myeloids_annotated_per_sample.png"))
+myeseur@meta.data %>%
+    count(primary_sample, ann_lvl_2_Myeloids) %>%
+    group_by(ann_lvl_2_Myeloids) %>%
+    mutate(composition = n / sum(n)) %>%
+    ggplot(aes(x = ann_lvl_2_Myeloids, y = composition, fill = primary_sample)) +
+    geom_bar(position = "stack", stat = "identity") +
+    scale_fill_manual(values = nejm_colors) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, face = "bold", size = 14, color = "black")) +
+    labs(title = "Composition of Myeloids per sample for resolution 0.5 annotated") -> cluster_comp_plot
+ggsave(cluster_comp_plot, file = paste0(output_figs, "cluster_Myeloids_annotated.png"))
+
+umap_annotated <- DimPlot(
+    object = myeseur,
+    reduction = paste0("umap.harmony.", "Myeloid"),
+    pt.size = 0.1,
+    label = TRUE
+) & NoLegend() &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes() & labs(title = "Umap of annotated Myeloid populations (all patients)")
+ggsave(umap_annotated, file = paste0(output_figs, "annotated_umap.png"))
+
+
+vln <- VlnPlot(myeseur, features = c("percent_mt", "nCount_RNA", "doublet.score", "nFeature_RNA"), ncol = 2, pt.size = 0.1)
+ggsave(vln, file = paste0(output_figs, "Violin_basic_stats_annotated.png"),width = 15, height = 10)
+
+dot_markers <- DotPlot(myeseur, features = c(
+    "PTPRC","CD8A","CD4","VCAN","CD14","CD68","CD163","TREM2","APOE","CXCL10","CD1C","FCER1A","CLEC10A","S100A9","S100A10","P2RY12","SLC2A5","TMEM119","LILRA4","FTL","FCGR3A","CLEC9A","CLNK","CCR7","LAMP3","FSCN1","OTOA"
+), cluster.idents = TRUE) + RotatedAxis()
+ggsave(dot_markers, file = paste0(output_figs, "Dotplot_Myeloids_annotated.png"),width = 20, height = 10)
+
+```
+
+
+
+```{R plotting some final plots of myeseur, eval = F}
+Idents(object = myeseur) <- "RNA_snn_res.0.5"
+
+new.cluster.ids <- c("Monocytes", "Macrophages", "Neutrophils", "Macrophage_OTOA", "Doublets", "CD1CA+_A", "Monocytic_MDSCs", "Microglia", "pDCs", "Macrophage_SPP1", "cDC1","mregDCs")
+names(new.cluster.ids) <- levels(myeseur)
+myeseur <- RenameIdents(myeseur, new.cluster.ids)
+myeseur[["ann_lvl_2_Myeloids"]] <- Idents(myeseur)
+
+FeaturePlot(myeseur, features = "OTOA",  reduction = paste0("umap.harmony.", reduction_name), order = TRUE) & NoAxes()
+
+
+
+plot_list <- FeaturePlot(myeseur, features = c("PTPRC","CD8A","CD4","VCAN","CD14","CD68","CD163","TREM2","APOE","CXCL10","CD1C","FCER1A","CLEC10A","S100A9"), reduction =paste0("umap.harmony.",reduction_name), order = TRUE) & NoAxes()
+
+
+ggsave(filename=paste0(output_figs,"umap_genes.png"),plot_list, width = 20, height = 15)
+plot_list <- FeaturePlot(myeseur, features = c("percent_mt"), reduction =paste0("umap.harmony.",reduction_name), order = TRUE) & NoAxes()
+ggsave(filename=paste0(output_figs,"umap_mt.png"),plot_list, width = 10, height = 10)
+
+
+new.cluster.ids <- c("Monocytes", "Macrophages", "Neutrophils", "Macrophage_OTOA", "Doublets", "CD1CA+_A", "Monocytic_MDSCs", "Microglia", "pDCs", "Macrophage_SPP1", "cDC1","mregDCs")
+names(new.cluster.ids) <- levels(myeseur)
+myeseur <- RenameIdents(myeseur, new.cluster.ids)
+myeseur[["ann_lvl_2_Myeloids_final"]] <- Idents(myeseur)
+library(dittoSeq)
+
+dittoDimPlot(myeseur,
+    var = "ann_lvl_2_Myeloids_final",
+    do.label = T,
+    reduction.use = paste0("umap.harmony.",reduction_name),
+    # do.contour = TRUE, contour.color = 'black'   
+    ) & NoAxes()
+
+ggsave(filename=paste0(output_figs,"umap_annotated_Mcells.png"), width = 15, height = 15)
+vln <- VlnPlot(myeseur, features = c("percent_mt", "nCount_RNA", "doublet.score", "nFeature_RNA","percent.rb"), ncol = 2, pt.size = 0.1)
+ggsave(vln, file = paste0(output_figs, "Myeloids_res0.5_stats_ann.png"),width = 15, height = 15)
+
+dot_markers <- DotPlot(myeseur, features = c(
+    "PTPRC","CD8A","CD4","VCAN","CD14","CD68","CD163","TREM2","APOE","CXCL10","CD1C","FCER1A","CLEC10A","S100A9","S100A10","S100A12","P2RY12","SLC2A5","TMEM119","LILRA4","FTL","FCGR3A","CLEC9A","CLNK","CCR7","LAMP3","FSCN1","OTOA","SPP1"
+), cluster.idents = TRUE) + RotatedAxis()
+ggsave(dot_markers, file = paste0(output_figs, "Dotplot_Myeloids_annotated.png"),width = 20, height = 10)
+
+dittoBarPlot(myeseur, "ann_lvl_2_Myeloids_final", group.by = "primary_sample")
+ggsave(filename=paste0(output_figs,"barplot_per_sample.png"), width = 15, height = 15)
+
+```
+
+
+
+```{R saving object,eval = T}
+saveRDS(object = myeseur, file ="03_processing/12_phase_5/data/Myeloid_seurat_annotated.rds")
+```
+
+```{R rmd, eval = F}
+rmarkdown::render(
+    input = paste0("02_scripts/05_ann_lvl2/02_Myeloid_annotation.rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits",
+    output_file = paste0("02_Myeloid_annotation.html")
+)
+```

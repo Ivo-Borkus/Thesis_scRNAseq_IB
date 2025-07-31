@@ -1,0 +1,131 @@
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+```
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+library(DoubletFinder)
+library(clustree)
+library(knitr)
+library(rscrublet)
+library(Matrix)
+library(patchwork)
+library(harmony)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+```
+
+```{R Loading in meta data, echo = FALSE, message = FALSE}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+```
+
+```{R setting variables}
+output_fig <- "03_processing/10_integration/figs/tumour/"
+output_data <- NA
+input_data <- "03_processing/10_integration/data/merged_subset_tumour.rds"
+sample <- "Tumour subset"
+reduction_name <- "merged_subset_tumour"
+res <- "1.5"
+nejm_colors <- paletteer::paletteer_d(
+    "ggsci::default_nejm", length(levels(as.factor(meta_data$sample_name)))
+)
+```
+```{R gene features}
+
+```
+
+```{R general functions}
+umap_sample <- function(seurat_obj, reduction_name, title_name) {
+    umap_by_sample <- DimPlot(
+        object = seurat_obj,
+        reduction = reduction_name,
+        group.by = "sample",
+        pt.size = 0.1,
+        label = F, cols = nejm_colors
+    ) & theme(plot.title = element_text(size = 10)) &
+        NoAxes() & labs(title = title_name)
+}
+```
+
+
+
+```{R method 2}
+seurat_obj <- readRDS(file = input_data)
+print(ncol(seurat_obj))
+seurat_obj[["RNA"]] <- split(seurat_obj[["RNA"]], f = seurat_obj$sample)
+```
+
+```{R run the analysis on the seperate layers}
+# reduction_name <- "merged"
+seurat_obj <- NormalizeData(seurat_obj)
+seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = "vst", nfeatures = 2000, verbose = TRUE)
+all.genes <- rownames(seurat_obj)
+seurat_obj <- ScaleData(object = seurat_obj, features = all.genes, verbose = FALSE)
+seurat_obj <- RunPCA(object = seurat_obj, features = VariableFeatures(object = seurat_obj), nfeatures.print = 5, ndims.print = 1:2, reduction.name = paste0("pca_", reduction_name))
+seurat_obj <- FindNeighbors(seurat_obj, dims = 1:10, reduction = paste0("pca_", reduction_name))
+
+res_values <- c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.5)
+seurat_obj <- FindClusters(seurat_obj, resolution = res_values, algorithm = 4)
+seurat_obj <- RunUMAP(seurat_obj, dims = 1:10, reduction = paste0("pca_", reduction_name), reduction.name = paste0("umap.", reduction_name), verbose = FALSE)
+# DimPlot(obj, reduction = paste0("umap.", reduction_name), group.by = c("sample"))
+ggsave(umap_sample(seurat_obj, paste0("umap.", reduction_name), paste0("merging of samples using", sample), file = paste0("03_processing/10_integration/figs/", reduction_name, "_sample.png")), height = 20, width = 20)
+```
+
+
+```{R integration}
+seurat_obj <- IntegrateLayers(
+    object = seurat_obj, method = HarmonyIntegration,
+    orig.reduction = paste0("pca_", reduction_name), new.reduction = paste0("harmony_", reduction_name),
+    verbose = FALSE
+)
+
+seurat_obj <- FindNeighbors(seurat_obj, reduction = paste0("harmony_", reduction_name), dims = 1:10)
+res_values <- c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.5)
+seurat_obj <- FindClusters(seurat_obj, "RNA_snn", resolution = res_values, algorithm = 4)
+seurat_obj <- RunUMAP(seurat_obj, dims = 1:10, reduction = paste0("harmony_", reduction_name), reduction.name = paste0("umap_harmony.", reduction_name), verbose = FALSE)
+ggsave(umap_sample(seurat_obj, paste0("umap_harmony.", reduction_name), paste0("Merging of samples using: ", sample, " integrated"), file = paste0("03_processing/10_integration/figs/harmony_", reduction_name, "_sample.png")), height = 20, width = 20)
+```
+
+
+```{R then join layers, eval = T}
+seurat_obj <- JoinLayers(seurat_obj)
+seurat_obj
+
+saveRDS(seurat_obj, file = "03_processing/10_integration/data/integrated_tumour.rds")
+```
+
+
+```{R eval = FALSE}
+rmarkdown::render(
+    input = paste0("02_scripts/03_phase/Tumour/02_umap_per_sample_tumour.rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits/03_phase/Tumour/",
+    output_file = paste0("02_umap_per_sample_tumour.html")
+)
+```

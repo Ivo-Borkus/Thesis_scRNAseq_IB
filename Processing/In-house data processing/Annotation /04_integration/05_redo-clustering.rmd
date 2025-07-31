@@ -1,0 +1,161 @@
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+# install.packages("languageserver")
+```
+
+```{R general functions, eval =T}
+library(here)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+output_figs <- "03_processing/11_phase_4/figs/post_harmony/without_doubs/batch_job/"
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+source("02_scripts/04_integration/functions.R")
+```
+
+
+```{R immune cells}
+seurat_obj <- readRDS(file = "03_processing/11_phase_4/data/post_harmony_immune_subset.rds")
+reduction_name <- "merged_subset_immune"
+```
+
+```{R adding meta_data to the seurat_obj, include = TRUE, fig.width = 15, fig.heigth = 20}
+un_samples <- unique(seurat_obj$sample)
+sample_to_primary_sample <- setNames(primary_sample, un_samples)
+sample_to_primary <- setNames(primary, un_samples)
+seurat_obj@meta.data$primary_sample <- sample_to_primary_sample[seurat_obj$sample]
+seurat_obj@meta.data$primary <- sample_to_primary[seurat_obj$sample]
+
+Idents(object = seurat_obj) <- "RNA_snn_res.0.3"
+new.cluster.ids <- c("Monocytes", "Metabolic_CD8", "Cytotoxic_CD8", "Tregs", "Proliferative_Tregs_and_CD8", "Proliferative_1", "DCs", "Doublets", "pDCs_Bcells", "Microglia", "Plasmacells", "TAMs")
+
+names(new.cluster.ids) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids)
+seurat_obj[["ann_lvl_1"]] <- Idents(seurat_obj)
+seurat_obj@meta.data$primary_sample <- factor(seurat_obj@meta.data$primary_sample, levels = c(
+    primary_sample
+))
+
+DimPlot(
+        object = seurat_obj,
+        reduction = paste0("umap.harmony.",  "merged_subset_immune"),
+        pt.size = 0.1,
+        label = T,
+    ) & theme(plot.title = element_text(size = 10)) &
+        NoAxes() & labs(title = paste0("Data: ", "merged_subset_immune", " plot of annotation"))
+```
+
+
+```{R subset data , echo = TRUE, include = TRUE}
+# seurat_obj <- readRDS(file = "03_processing/11_phase_4/data/post_harmony_immune_subset.rds")
+# ALl types without bad quality and doublets
+celltypes <-  c("Monocytes", "Metabolic_CD8", "Cytotoxic_CD8", "Tregs", "Proliferative_Tregs_and_CD8", "Proliferative_1", "DCs","pDCs_Bcells", "Microglia", "Plasmacells", "TAMs")
+unique(Idents(seurat_obj))
+no_dub_seur <- subset(x = seurat_obj, idents = celltypes, invert = F)
+Idents(no_dub_seur) <- no_dub_seur@meta.data$specific_annotation_immune
+no_dub_seur <- subset(x = no_dub_seur,idents = c("Tumour", "doublets"), invert = T )
+ncol(no_dub_seur)
+
+```
+
+
+```{R, fig.width = 15, fig.heigth = 20}
+reduction_name <- "immune_no_doub"
+no_dub_seur[["RNA"]] <- split(no_dub_seur[["RNA"]], f = no_dub_seur$sample)
+no_dub_seur <- FindVariableFeatures(no_dub_seur, selection.method = "vst", nfeatures = 2000, verbose = TRUE)
+hvf_info <- HVFInfo(no_dub_seur)
+top_variable_genes <- hvf_info[order(hvf_info$variance.standardized, decreasing = TRUE), ]
+top_2000_genes <- rownames(top_variable_genes)[1:2000]
+VariableFeatures(no_dub_seur) <- top_2000_genes
+no_dub_seur <- ScaleData(object = no_dub_seur, features = rownames(no_dub_seur), verbose = FALSE)
+no_dub_seur <- RunPCA(
+    object = no_dub_seur, nfeatures.print = 5, ndims.print = 1:2, reduction.name = paste0("pca_", reduction_name)
+)
+ElbowPlot(no_dub_seur, reduction =  paste0("pca_", reduction_name),ndims = 50)
+VizDimLoadings(no_dub_seur,
+    dims = 1:5, reduction =  paste0("pca_", reduction_name), nfeatures = 15
+)
+# PCA_elbow <- ElbowPlot(no_dub_seur, reduction =  paste0("pca_", reduction_name),ndims = 50)
+# Genes_influence_PCA <- VizDimLoadings(no_dub_seur,
+#     dims = 1:5, reduction =  paste0("pca_", reduction_name), nfeatures = 15
+# )
+# ggsave(PCA_elbow, filename = paste0(output_figs, reduction_name, "_PCA_elbow_1.png"), width = 10, height= 10)
+# ggsave(Genes_influence_PCA, filename = paste0(output_figs, reduction_name, "_PCA_loadings_1.png"), width = 15, height = 15)
+
+no_dub_seur <- IntegrateLayers(
+    object = no_dub_seur, method = HarmonyIntegration,
+    orig.reduction = paste0("pca_", reduction_name), new.reduction = paste0("harmony_pca.", reduction_name),
+    verbose = TRUE
+)
+
+res_values <- c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.5)
+no_dub_seur <- FindNeighbors(no_dub_seur, reduction = paste0("harmony_pca.", reduction_name), dims = 1:25)
+no_dub_seur <- FindClusters(no_dub_seur, resolution = res_values, algorithm = 4)
+no_dub_seur <- RunUMAP(no_dub_seur, reduction = paste0("harmony_pca.", reduction_name), dims = 1:25, reduction.name = paste0("umap.harmony.", reduction_name))
+Running_plots_post_harmony(no_dub_seur, reduction_name)
+no_dub_seur <- JoinLayers(no_dub_seur)
+# saveRDS(processed_list, file = "03_processing/09_subset_annotation/data/processed_list.rds")
+no_dub_seur@meta.data$ann_lvl_1 %>% unique()
+umap_no_dub_old_ann <- DimPlot(
+    object = no_dub_seur,
+    reduction = paste0("umap.harmony.",  "immune_no_doub"),
+    pt.size = 0.1,
+    group.by = "ann_lvl_1",    
+    label = T,
+) & theme(plot.title = element_text(size = 10)) &
+    NoAxes() & labs(title = paste0("Data: ", "immune_no_doub", " plot of annotation"))
+
+umap_no_dub_old_ann
+# ggsave(umap_no_dub_old_ann, file = paste0(output_figs, reduction_name, "_Umap_annotation_pre-dub.png"), height = 20, width = 20)
+```
+
+
+
+# Verifying integration
+```{R verifying integration,fig.width = 15, fig.heigth = 20}
+ndims = 25
+
+Embeddings(no_dub_seur, reduction = paste0("harmony_pca.", reduction_name))[,1:25] %>%  compute_lisi( ,meta_data = no_dub_seur@meta.data,label_colnames =  c("sample"))-> lis
+Embeddings(no_dub_seur, reduction = paste0("pca_", reduction_name))[,1:25] %>%  compute_lisi( ,meta_data = no_dub_seur@meta.data,label_colnames =  c("sample"))-> lis_no_int
+
+lis_no_int$integrated <- "no"
+lis$integrated <- "yes"
+combined <- rbind(lis_no_int, lis)
+t.test(sample ~ integrated, data = combined) -> test_result
+plot <- ggplot(combined, mapping = aes(x = integrated, y = sample)) +
+    geom_boxplot() +
+    theme_minimal() & labs(title = paste0("Lisi score pre and post integration with a significand t-test statistic: ", round(test_result$statistic,2)))
+plot
+ggsave(plot, filename = paste0(output_figs, "Lisi_samples_",reduction_name,".png"))
+```
+
+
+```{R, eval = T}
+saveRDS(no_dub_seur, file = "03_processing/11_phase_4/data/immune_subset_without_doubs.rds")
+
+```
+
+```{R rmd, eval = F}
+
+rmarkdown::render(
+    input = paste0("02_scripts/04_integration/05_redo-clustering.rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits",
+    output_file = paste0("05_redo-clustering.html")
+)
+```

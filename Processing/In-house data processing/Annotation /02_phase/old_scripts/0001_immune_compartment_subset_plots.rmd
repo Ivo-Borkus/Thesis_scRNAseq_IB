@@ -1,0 +1,146 @@
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+```
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+library(DoubletFinder)
+library(clustree)
+library(knitr)
+library(rscrublet)
+library(Matrix)
+library(patchwork)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+```
+
+```{R Loading meta data, echo = FALSE, message = FALSE}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+```
+
+
+```{R Functions, eval = FALSE}
+
+```
+
+
+
+```{R Plotting features and umaps, include = TRUE, eval = FALSE}
+output_umap_res <- "03_processing/09_subset_annotation/figs/umap_resolution/"
+output_umap_feat <- "03_processing/09_subset_annotation/figs/umap_features/"
+processed_list <- readRDS(file = "03_processing/09_subset_annotation/data/processed_list.rds")
+
+for (index in 1:length(processed_list)) {
+    sample <- meta_data$sample_fullname[index]
+    seurat_obj <- processed_list[[index]]
+    resolution_columns <- grep("^RNA_snn_res\\.",
+        colnames(seurat_obj@meta.data),
+        value = TRUE
+    )
+    umap_resolution_combined <- DimPlot(
+        object = seurat_obj,
+        reduction = "umap.unintegrated_im",
+        group.by = resolution_columns,
+        pt.size = 0.1,
+        label = TRUE
+    ) & NoLegend() &
+        theme(plot.title = element_text(size = 10)) &
+        NoAxes()
+    features <- FeaturePlot(seurat_obj,
+        # features = c("PTPRC", "CD4", "CD8A", "CD8B", "CD3D", "CD3E", "MS4A1", "CD79A", "CD79B", "S100A8", "CD14", "C1QC", "CD68", "LILRA4", "IL3RA", "CD1C", "MAG", "MLANA"),
+        features = c(
+            "PTPRC", # Immune
+            ## Lymphoid
+            "CD3D", "CD3E", # T cells
+            "CD4", "CD8B", # distinction between 4 and 8
+            "FOXP3", "IL2RA", # T regs
+            "NCAM1", "CD56", # NK cells
+            "MS4A1", "CD79A", # B cells
+            "TCL1A", # Naive B cells
+            "BANK1", "BLK", # Memory/ activated B cells
+            "SDC1", "PRDM1", # Plasma cells
+            ## Myeloid
+            "S100A8", "CD14", # Monocytes
+            "CD163", "CD68", # Macrophage markers
+            "C1QC", # Tolerogenic macrophages
+            "P2RY12", "SLC2A5", # microglia
+            "SPP1", # specific subsets
+            "LILRA4", # pDCs
+            "CD1C", "CLEC10A", # DCs
+            "CD34", "KIT", # HSCs
+            "MAG", "MLANA" # other cells
+        ),
+        reduction = "umap.unintegrated_im",
+        ncol = 3
+    ) & NoAxes()
+    # ggsave(umap_resolution_combined, file = paste0(output_umap_res, sample, ".png"))
+    ggsave(features, file = paste0(output_umap_feat, sample, "_new.png"), width = 20, height = 25)
+}
+```
+
+```{R violin plots, eval = TRUE}
+processed_list <- readRDS(file = "03_processing/09_subset_annotation/data/processed_list.rds")
+
+res <- "1.5"
+for (index in 1:length(processed_list)) {
+    sample <- meta_data$sample_fullname[index]
+    cat(sample)
+    seurat_obj <- processed_list[[index]]
+    Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+    violins_dendritic <- VlnPlot(seurat_obj, features = c("CD1C", "LILRA4")) + plot_annotation("Violin plots of cDCs and pDCs", theme = theme(plot.title = element_text(hjust = 0.5, size = 15, face = "italic")))
+    violins_bcell <- VlnPlot(seurat_obj, features = c("MS4A1", "CD79B")) + plot_annotation("Violin plots of B cells", theme = theme(plot.title = element_text(hjust = 0.5, size = 15, face = "italic")))
+    violins_tcell <- VlnPlot(seurat_obj, features = c("CD4","CD8A" "CD8B", "CD3E"), ncol = 2) + plot_annotation("Violin plots of T cells", theme = theme(plot.title = element_text(hjust = 0.5, size = 15, face = "italic")))
+    violins_nk <- VlnPlot(seurat_obj, features = c("KLRB1","NCAM1")) + plot_annotation("Violin plots of Natural killer cells", theme = theme(plot.title = element_text(hjust = 0.5, size = 15, face = "italic")))
+    violins_mono_macro <- VlnPlot(seurat_obj, features = c("S100A8", "CD14", "C1QC", "CD68"), ncol = 2) + plot_annotation("Violin plots of macrophages and monocytes", theme = theme(plot.title = element_text(hjust = 0.5, size = 15, face = "italic")))
+    print(violins_dendritic)
+    print(violins_bcell)
+    print(violins_tcell)
+    print(violins_nk)
+    print(violins_mono_macro)
+    violin_QC_annotated <- VlnPlot(seurat_obj, features = c("nCount_RNA", "nFeature_RNA", "percent_mt", "doublet.score"), ncol = 2) &
+        theme(plot.title = element_text(size = 10))
+
+
+    cluster_counts <- table(Idents(seurat_obj))
+    cluster_df <- as.data.frame(cluster_counts)
+    colnames(cluster_df) <- c("Cluster", "Cell_Count")
+
+    counts_annotated <- ggplot(cluster_df, aes(x = Cluster, y = Cell_Count, fill = Cluster)) +
+        geom_bar(stat = "identity") +
+        theme_minimal() +
+        labs(
+            title = paste("Number of Cells per Cluster - Resolution", res),
+            x = "Cluster", y = "Number of Cells"
+        ) +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+    print(violin_QC_annotated)
+    print(counts_annotated)
+}
+```

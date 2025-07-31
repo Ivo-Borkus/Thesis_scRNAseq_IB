@@ -1,0 +1,242 @@
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+```
+
+
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+library(DoubletFinder)
+library(clustree)
+library(knitr)
+library(rscrublet)
+library(Matrix)
+library(patchwork)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/lineage_annotation/per_sample_annotation.rmd")
+```
+
+```{R Loading meta data, echo = FALSE, message = FALSE}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+```
+
+
+
+
+```{R functions}
+umap_annotated <- function(seurat_obj, output_dir, name) {
+    cat("File will be saved in: \n")
+    cat(paste0(output_dir, name))
+    umap_resolution_annotated <- DimPlot(
+        object = seurat_obj,
+        reduction = "umap.unintegrated",
+        pt.size = 0.1,
+        label = TRUE
+    ) & NoLegend() &
+        theme(plot.title = element_text(size = 10)) &
+        NoAxes()
+    ggsave(umap_resolution_annotated, file = paste0(output_dir, name))
+}
+processing_sample <- function(seurat_obj) {
+    cat(paste("don't forget to set Ident, usage:", "res <- '0.1'", "Idents(seurat_obj) <- paste0('RNA_snn_res.'', res)", sep = "\n"))
+    seurat_obj.markers <- FindAllMarkers(
+        object = seurat_obj,
+        only.pos = TRUE, min.pct = 0.25,
+        logfc.threshold = 0.25
+    )
+    seurat_obj.markers %>%
+        arrange(cluster, desc(avg_log2FC)) %>%
+        ungroup() %>%
+        group_by(cluster) %>%
+        slice_head(n = 5) %>%
+        select(avg_log2FC, cluster, gene) %>%
+        print()
+    return(seurat_obj.markers)
+}
+excel_sheet <- function(markers, output_dir, name) {
+    library(writexl)
+    print(paste0("Output will be put in: ", output_dir, name, ".xlsx"))
+    if (file.exists(output_dir)) {
+        markers %>%
+            arrange(cluster, desc(avg_log2FC)) %>% # Arrange within each cluster
+            group_by(cluster) %>%
+            select(cluster, pct.1, pct.2, p_val, p_val_adj, avg_log2FC, gene) %>%
+            group_split() %>% # Split into list by 'cluster'
+            setNames(unique(markers$cluster)) %>% # Name list elements
+            writexl::write_xlsx(paste0(output_dir, name, ".xlsx"))
+    } else {
+        stop("Directory does not exist")
+    }
+}
+```
+
+```{R Setting directories, eval = FALSE}
+output_dir <- paste0(here(), "/", "03_processing/09_subset_annotation/")
+output_marker <- paste0(output_dir, "marker_list/")
+```
+
+
+
+```{R}
+seurat_obj <- readRDS(list.files("03_processing/08_annotation/data", full.names = TRUE)[1])
+
+if ("Brain" %in% levels(seurat_obj)) {
+    seurat_obj <- subset(x = seurat_obj, idents = c("Tumour", "Brain"), invert = TRUE)
+} else {
+    seurat_obj <- subset(x = seurat_obj, idents = c("Tumour"), invert = TRUE)
+}
+print(ncol(seurat_obj))
+seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = "vst", nfeatures = 2000)
+all.genes <- rownames(seurat_obj)
+seurat_obj <- ScaleData(object = seurat_obj, features = all.genes)
+seurat_obj <- RunPCA(
+    object = seurat_obj,
+    features = VariableFeatures(object = seurat_obj),
+    nfeatures.print = 5, ndims.print = 1:2,
+    reduction.name = "pca_im"
+)
+
+PCA_dim_plot <- DimPlot(seurat_obj, reduction = "pca_im") + NoLegend()
+PCA_elbow <- ElbowPlot(seurat_obj, reduction = "pca_im")
+Genes_influence_PCA <- VizDimLoadings(seurat_obj,
+    dims = 1:5, reduction = "pca_im", nfeatures = 15
+)
+# ===================================== #
+grid.arrange(PCA_dim_plot, PCA_elbow,
+    ncol = 2, nrow = 1
+)
+Genes_influence_PCA
+DimHeatmap(seurat_obj, dims = 1:6, cells = 100, balanced = TRUE, reduction = "pca_im")
+seurat_obj <- FindNeighbors(seurat_obj, dims = 1:10, reduction = "pca_im")
+res_values <- c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.5)
+seurat_obj <- FindClusters(seurat_obj, resolution = res_values, algorithm = 4)
+seurat_obj <- RunUMAP(seurat_obj, dims = 1:10, reduction = "pca_im", reduction.name = "umap.unintegrated_im")
+resolution_columns <- grep("^RNA_snn_res\\.",
+    colnames(seurat_obj@meta.data),
+    value = TRUE
+)
+umap_resolution_combined <- DimPlot(
+    object = seurat_obj,
+    reduction = "umap.unintegrated_im",
+    group.by = resolution_columns,
+    pt.size = 0.1,
+    label = TRUE
+) & NoLegend() &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+
+umap_resolution_combined
+Idents(seurat_obj) <- "RNA_snn_res.1.5"
+DimPlot(
+    object = seurat_obj,
+    reduction = "umap.unintegrated_im",
+    pt.size = 0.1,
+    label = TRUE
+) & NoLegend() &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+
+
+seurat_obj.markers <- processing_sample(seurat_obj)
+excel_sheet(seurat_obj.markers, output_dir = output_marker, name = "sample_1_with_brain")
+```
+
+```{R sample1  test, include = FALSE}
+seurat_obj <- readRDS(list.files("03_processing/08_annotation/data", full.names = TRUE)[1])
+umap_resolution <- DimPlot(
+    object = seurat_obj,
+    reduction = "umap.unintegrated",
+    pt.size = 0.1,
+    label = TRUE
+) & NoLegend() &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+seurat_obj <- CellSelector(plot = umap_resolution, ident = "weird_cluster", object = seurat_obj)
+
+if ("Brain" %in% levels(seurat_obj)) {
+    seurat_obj <- subset(x = seurat_obj, idents = c("Tumour", "Brain", "weird_cluster"), invert = TRUE)
+} else {
+    seurat_obj <- subset(x = seurat_obj, idents = c("Tumour", "weird_cluster"), invert = TRUE)
+}
+print(ncol(seurat_obj))
+
+
+seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = "vst", nfeatures = 2000)
+all.genes <- rownames(seurat_obj)
+seurat_obj <- ScaleData(object = seurat_obj, features = all.genes)
+seurat_obj <- RunPCA(
+    object = seurat_obj,
+    features = VariableFeatures(object = seurat_obj),
+    nfeatures.print = 5, ndims.print = 1:2,
+    reduction.name = "pca_im"
+)
+
+PCA_dim_plot <- DimPlot(seurat_obj, reduction = "pca_im") + NoLegend()
+PCA_elbow <- ElbowPlot(seurat_obj, reduction = "pca_im")
+Genes_influence_PCA <- VizDimLoadings(seurat_obj,
+    dims = 1:5, reduction = "pca_im", nfeatures = 15
+)
+# ===================================== #
+grid.arrange(PCA_dim_plot, PCA_elbow,
+    ncol = 2, nrow = 1
+)
+Genes_influence_PCA
+DimHeatmap(seurat_obj, dims = 1:6, cells = 100, balanced = TRUE, reduction = "pca_im")
+seurat_obj <- FindNeighbors(seurat_obj, dims = 1:10, reduction = "pca_im")
+res_values <- c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.5)
+seurat_obj <- FindClusters(seurat_obj, resolution = res_values, algorithm = 4)
+seurat_obj <- RunUMAP(seurat_obj, dims = 1:10, reduction = "pca_im", reduction.name = "umap.unintegrated_im")
+resolution_columns <- grep("^RNA_snn_res\\.",
+    colnames(seurat_obj@meta.data),
+    value = TRUE
+)
+umap_resolution_combined <- DimPlot(
+    object = seurat_obj,
+    reduction = "umap.unintegrated_im",
+    group.by = resolution_columns,
+    pt.size = 0.1,
+    label = TRUE
+) & NoLegend() &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+umap_resolution_combined
+Idents(seurat_obj) <- "RNA_snn_res.1.5"
+DimPlot(
+    object = seurat_obj,
+    reduction = "umap.unintegrated_im",
+    pt.size = 0.1,
+    label = TRUE
+) & NoLegend() &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+
+
+seurat_obj.markers <- processing_sample(seurat_obj)
+excel_sheet(seurat_obj.markers, output_dir = output_marker, name = "sample_1_without_brain")
+```

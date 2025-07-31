@@ -1,0 +1,133 @@
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+```
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+library(DoubletFinder)
+library(clustree)
+library(knitr)
+library(rscrublet)
+library(Matrix)
+library(patchwork)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+```
+
+```{R Loading meta data, echo = FALSE, message = FALSE}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+nejm_colors <- paletteer::paletteer_d(
+    "ggsci::default_nejm", length(levels(as.factor(meta_data$sample_name)))
+)
+
+output_umap_res <- "03_processing/10_integration/figs/umap_res/"
+output_umap_feat <- "03_processing/10_integration/figs/umap_feature/"
+primary_colors <- c("#66c2a5", "#fc8d62", "#8da0cb", "#e78ac3")
+primary_colors_sample <- c("#66c2a5", "#fc8d62", "#fc8d62", "#8da0cb", "#e78ac3", "#e78ac3", "#e78ac3", "#e78ac3")
+primary <- c("CUP", "Colon", "Colon", "Lung", "Melanoma", "Melanoma", "Melanoma", "Melanoma")
+sample_primary <- c("CUP", "Colon_1", "Colon_2", "Lung", "Melanoma_1_sorted", "Melanoma_2_sorted", "Melanoma_2_unsorted", "Melanoma_3_unsorted")
+```
+
+
+```{R loading in data, eval = T}
+# seurat_obj_total <- readRDS(file = "03_processing/10_integration/data/merged_scratch.rds")
+seurat_obj_immune <- readRDS(file = "03_processing/10_integration/data/merged_subset_immune.rds")
+seurat_obj_tumour <- readRDS(file = "03_processing/10_integration/data/merged_subset_tumour.rds")
+```
+
+```{R contents of objects, include = T, eval = T}
+# ncol(seurat_obj_total)
+ncol(seurat_obj_immune)
+ncol(seurat_obj_tumour)
+```
+
+
+```{R creating count dfs, echo = FALSE, eval = T}
+# total_df <- seurat_obj_total@meta.data %>%
+#     group_by(sample) %>%
+#     summarise(count = n()) %>%
+#     mutate(proportion = count / sum(count) * 100)
+immune_df <- seurat_obj_immune@meta.data %>%
+    group_by(sample) %>%
+    summarise(count = n()) %>%
+    mutate(proportion = count / sum(count) * 100)
+tumour_df <- seurat_obj_tumour@meta.data %>%
+    group_by(sample) %>%
+    summarise(count = n()) %>%
+    mutate(proportion = count / sum(count) * 100)
+
+immune_df$group <- "Immune"
+tumour_df$group <- "Tumour"
+new <- rbind(tumour_df, immune_df)
+new$sample_2 <- rep(c(sample_primary), 2)
+new$sample_2 <- factor(new$sample_2, levels = unique(new$sample_2))
+
+new$tumour_origin <- rep(c(primary), 2)
+new$tumour_origin <- factor(new$tumour_origin, levels = unique(new$tumour_origin))
+```
+
+```{R making images, include = T}
+nice_hue <- c("#fbb4ae", "#b3cde3", "#ccebc5", "#decbe4")
+cosy_hue <- c("#b3e2cd", "#fdcdac", "#cbd5e8", "#f4cae4")
+different_hue <- c("#8dd3c7", "#ffffb3", "#bebada", "#fb8072")
+primary_colors <- c("#66c2a5", "#fc8d62", "#8da0cb", "#e78ac3")
+
+
+stacks_sample <- ggplot(new, aes(x = group, y = proportion, fill = sample)) +
+    geom_bar(stat = "identity") +
+    scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+    scale_fill_manual(values = nejm_colors) +
+    labs(x = "", y = "Proportion (%)", fill = "Sample", title = "Contribution (%) of the samples to the different cellular compartments") +
+    theme_minimal()
+stacks_sample_2 <- ggplot(new, aes(x = group, y = proportion, fill = sample_2)) +
+    geom_bar(stat = "identity") +
+    scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+    scale_fill_manual(values = nejm_colors) +
+    labs(x = "", y = "Proportion (%)", fill = "Sample", title = "Contribution (%) of the samples to the different cellular compartments") +
+    theme_minimal()
+stacks_primary <- ggplot(new, aes(x = "", y = proportion, fill = tumour_origin)) +
+    geom_bar(stat = "identity") +
+    scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+    scale_fill_manual(values = primary_colors) +
+    facet_wrap(~group) +
+    labs(x = "group", y = "Proportion (%)", fill = "Tumour origin", title = "Contribution (%) of the tumour of origin to the different cellular compartments") +
+    theme_minimal()
+```
+
+
+```{R saving images, eval = F, echo = F}
+ggsave(stacks_sample, file = "Compartments_by_sample_2.png")
+ggsave(stacks_primary, file = "Compartments_by_primary_2.png")
+ggsave(stacks_sample_2, file = "Compartments_by_sample_3.png")
+```
+
+```{R images, include = T}
+stacks_primary
+stacks_sample
+```

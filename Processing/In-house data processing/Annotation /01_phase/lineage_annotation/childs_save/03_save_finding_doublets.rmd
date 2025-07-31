@@ -1,0 +1,36 @@
+
+
+# Doubletfinder analysis on processed data
+```{R reading seurat, eval = load}
+seurat_obj <- readRDS(file = paste0("03_processing/01_QC/data/subsets/Doublet_finder/", sample, ".rds"))
+
+homotyp <- modelHomotypic(Idents(seurat_obj))
+nExp_poi <- round(0.075 * nrow(seurat_obj@meta.data))
+nExp_poi.adj <- round(nExp_poi * (homotyp))
+columns_meta_data <- colnames(seurat_obj@meta.data)
+columns_meta_data <- columns_meta_data[grepl("^DF", columns_meta_data)][1]
+pK_choose <- regmatches(columns_meta_data, gregexpr("\\d+\\.\\d+", columns_meta_data))[[1]][2]
+```
+
+
+
+```{R umap feature plots, echo = FALSE}
+Feature_mt_umap <- FeaturePlot(seurat_obj, features = "percent_mt", reduction = "umap.unintegrated", pt.size = 0.1) & NoAxes()
+Feature_count_umap <- FeaturePlot(seurat_obj, features = "nCount_RNA", reduction = "umap.unintegrated", pt.size = 0.1) & NoAxes()
+doublet_score_plot <- FeaturePlot(seurat_obj, features = "doublet.score", pt.size = 0.1) & NoAxes() & labs(title = "Scrublet scores")
+doublet_finder_score <- FeaturePlot(seurat_obj, features = paste0("pANN_0.25_", pK_choose, "_", nExp_poi.adj), pt.size = 0.1) & NoAxes() & labs(title = "Doublet finder score")
+classifications_string <- DimPlot(seurat_obj, group.by = paste0("DF.classifications_0.25_", pK_choose, "_", nExp_poi), pt.size = 0.1) & NoAxes() & labs(title = "Doublet finder classification naive")
+classifications_lenient <- DimPlot(seurat_obj, group.by = paste0("DF.classifications_0.25_", pK_choose, "_", nExp_poi.adj), pt.size = 0.1) & NoAxes() & labs(title = "Doublet finder classification adjusted")
+```
+
+```{R Plotting doublet_finder, fig.align="center", echo = FALSE,fig.width=10,fig.height=10, message  = FALSE}
+grid.arrange(
+    Feature_mt_umap,
+    Feature_count_umap,
+    doublet_score_plot,
+    doublet_finder_score,
+    classifications_string,
+    classifications_lenient,
+    nrow = 3, ncol = 2
+)
+```

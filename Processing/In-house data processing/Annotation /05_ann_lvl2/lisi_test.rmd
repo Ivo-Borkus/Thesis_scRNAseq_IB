@@ -1,0 +1,130 @@
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, include = FALSE, echo = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+```
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(here)
+
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+library(DoubletFinder)
+library(clustree)
+library(knitr)
+library(rscrublet)
+library(Matrix)
+library(patchwork)
+library(harmony)
+library(lisi)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+```
+
+```{R Loading in meta data, echo = FALSE, message = FALSE}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+```
+
+```{R setting variables, echo = TRUE}
+output_figs <- "03_processing/12_phase_5/figs/"
+nejm_colors <- paletteer::paletteer_d(
+    "ggsci::default_nejm", length(levels(as.factor(meta_data$sample_fullname)))
+)
+primary_colors <- c("#66c2a5", "#fc8d62", "#8da0cb", "#e78ac3")
+primary_colors_sample <- c("#66c2a5", "#fc8d62", "#fc8d62", "#8da0cb", "#e78ac3", "#e78ac3", "#e78ac3", "#e78ac3")
+primary <- c("CUP", "Colon", "Colon", "Lung", "Melanoma", "Melanoma", "Melanoma", "Melanoma")
+primary_sample <- c("CUP", "Colon_1", "Colon_2", "Lung", "Melanoma_1_sorted", "Melanoma_2_sorted", "Melanoma_2_unsorted", "Melanoma_3_unsorted")
+```
+
+```{R general functions, eval =T}
+source("02_scripts/04_integration/functions.R")
+```
+```{R, include = TRUE, echo = TRUE}
+obj_join <- readRDS(file = "03_processing/12_phase_5/data/Myeloid_seurat.rds")
+pca_embeddings <- Embeddings(obj_join, reduction = "harmony_pca.Myeloid")
+pca_embeddings_small <- pca_embeddings[, 1:10]
+head(pca_embeddings_small,1)
+
+pca_embeddings_non_int <- Embeddings(obj_join, reduction = "pca_Myeloid")
+pca_embeddings_small_non_int <- pca_embeddings_non_int[, 1:10]
+head(pca_embeddings_small_non_int,1)
+```
+
+```{R, include = TRUE, echo = TRUE}
+Lisis_integrated <- compute_lisi(pca_embeddings_small, obj_join@meta.data, c(
+    "sample"
+))
+Lisis_non_integrated <- compute_lisi(pca_embeddings_small_non_int, obj_join@meta.data, c(
+    "sample"
+))
+head(Lisis_integrated)
+head(Lisis_non_integrated)
+Lisis_integrated$integrated <- "yes"
+Lisis_non_integrated$integrated <- "no"
+
+combined <- rbind(Lisis_integrated, Lisis_non_integrated)
+head(combined)
+t_test_result <- t.test(sample ~ integrated, data = combined)
+t_test_result
+ggplot(combined, mapping = aes(x = integrated, y = sample)) +
+    geom_boxplot() +
+    theme_minimal() & labs(title = "Lisi score for each cell Myeloid")
+```
+
+
+```{R checking T-cells, include = TRUE, echo = TRUE}
+tseur <- readRDS(file = "03_processing/12_phase_5/data/Tcell_seurat.rds")
+pca_embeddings_T <- Embeddings(tseur, reduction = "harmony_pca.Tcell")
+pca_embeddings_small_T <- pca_embeddings_T[, 1:10]
+head(pca_embeddings_small_T,1)
+
+pca_embeddings_non_int_T <- Embeddings(tseur, reduction = "pca_Tcell")
+pca_embeddings_small_non_int_T <- pca_embeddings_non_int_T[, 1:10]
+head(pca_embeddings_small_non_int_T,1)
+```
+
+```{R, include = TRUE, echo = TRUE}
+Lisis_integrated_T <- compute_lisi(pca_embeddings_small_T, tseur@meta.data, c(
+    "sample"
+))
+
+Lisis_non_integrated_T <- compute_lisi(pca_embeddings_small_non_int_T, tseur@meta.data, c(
+    "sample"
+))
+head(Lisis_integrated_T)
+head(Lisis_non_integrated_T)
+Lisis_integrated_T$integrated <- "yes"
+Lisis_non_integrated_T$integrated <- "no"
+
+combined_T <- rbind(Lisis_integrated_T, Lisis_non_integrated_T)
+head(combined_T)
+t_test_result_T <- t.test(sample ~ integrated, data = combined_T)
+t_test_result_T
+
+ggplot(combined_T, mapping = aes(x = integrated, y = sample)) +
+    geom_boxplot() +
+    theme_minimal() & labs(title = "Lisi score for each cell Tcells")
+```
+

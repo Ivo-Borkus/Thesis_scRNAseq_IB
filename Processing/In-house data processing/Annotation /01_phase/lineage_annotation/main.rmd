@@ -1,0 +1,166 @@
+
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+params:
+    sample: "105946-002-002"
+    fullname: "Mel_BrM23-17"
+    minUMI: 500
+    maxUMI: NA
+    minfeat: 300
+    maxfeat: 10000
+    maxmt: 20
+    res: "0.01"
+    load: FALSE
+    new: FALSE
+title: "`r paste0('Analysis of singlecellRNAseq sample ',params$fullname, ' with ID: ', params$sample)`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, echo = FALSE, message = FALSE, include = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+```
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+library(DoubletFinder)
+library(clustree)
+library(knitr)
+library(rscrublet)
+library(Matrix)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/lineage_annotation/main.rmd")
+```
+
+# Parameters
+```{R setting variables manually, eval = FALSE}
+sample <- "105946-002-002"
+minUMI <- 500
+maxUMI <- NA
+minfeat <- 300
+maxfeat <- 10000
+maxmt <- 20
+res <- 0.01
+```
+
+```{R parameter table, include = TRUE}
+sample <- params$sample
+minUMI <- params$minUMI
+maxUMI <- params$maxUMI
+minfeat <- params$minfeat
+maxfeat <- params$maxfeat
+maxmt <- params$maxmt
+res <- params$res
+load <- params$load
+new <- params$new
+# params <- rmarkdown::yaml_front_matter("02_scripts/lineage_annotation/Single.rmd")$params
+params_table <- data.frame(
+    Parameter = c("Sample", "Tumour primary", "Minimum UMI count", "Maximum UMI count", "Minimum genes count", "Maximum gene count", "Maximum mitochondrial %", "Resolution used", "Loading seurat objects"),
+    Value = c(params$sample, params$fullname, params$minUMI, params$maxUMI, params$minfeat, params$maxfeat, params$maxmt, params$res, params$load)
+)
+kable(params_table, caption = "Report Parameters")
+```
+
+```{R Loading data, echo = FALSE, message = FALSE}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+index <- match(sample, meta_data$sample_name)
+data_dir <- here("01_data", meta_data$sample_fullname[index], sample, "outs/per_sample_outs", sample, "count/sample_filtered_feature_bc_matrix")
+count_data <- Read10X(data.dir = data_dir)
+seurat_obj <- CreateSeuratObject(count_data)
+seurat_obj[["percent_mt"]] <- PercentageFeatureSet(seurat_obj, pattern = "^MT-")
+```
+
+```{R annotation new}
+# Running QC
+## This code runs the QC, which isn't saved in any object and therefore always from scratch
+
+# R Processing seurat form scratch
+## Processing the seurat object by
+## normalising,
+## scaling,
+## running PCA,
+## finding neighbours,
+## clustering
+## and reducing dimensions for visualisation
+## These are then plotted in the same file
+
+# running doublet finder from scratch
+## Running and plotting doublet finder from scratch (takes a long time)
+```
+```{R Running QC, child ="02_scripts/lineage_annotation/childs_new/01_new_QC.rmd"}
+```
+
+```{R Processing seurat form scratch, eval = new, child = "02_scripts/lineage_annotation/childs_new/02_new_processing_seurat.rmd"}
+
+```
+```{R running doublet finder from scratch, eval = new, child = "02_scripts/lineage_annotation/childs_new/03_new_finding_doublets.rmd"}
+```
+
+
+```{R annotation load}
+# Running QC
+## This code runs the QC, which isn't saved in any object and therefore always from scratch
+
+# R running saved seurats
+## Loading the seurat objects that are
+## normalised,
+## scaled,
+## PCA reduced,
+## neighbours found,
+## clustered
+## and dimension reduced for visualisation.
+## These are then plotted in the same file
+
+# running doublet finder from saved seurats
+## loading seurat object with doublet finder and plotting doublet finder from results (a lot faster)
+```
+
+```{R running saved seurats, eval = load, child = "02_scripts/lineage_annotation/childs_save/02_save_processing_seurat.rmd"}
+```
+
+```{R running doublet finder from saved seurats, eval = load, child = "02_scripts/lineage_annotation/childs_save/03_save_finding_doublets.rmd"}
+```
+
+```{R, eval = FALSE}
+seurat_obj <- readRDS(file = paste0("03_processing/01_QC/data/subsets/Doublet_finder/", sample, ".rds"))
+```
+
+```{R, include = TRUE}
+sessionInfo()
+```
+```{R example knitting, echo = FALSE, eval = FALSE}
+rmarkdown::render(
+    input = paste0("02_scripts/lineage_annotation/main.rmd"),
+    output_format = "html_document",
+    output_dir = here("02_scripts/knits/lineage_annotation"),
+    params = list(
+        sample = "105086-009-002",
+        fullname = "Lung_BrM23-24",
+        minUMI = 500,
+        maxUMI = NA,
+        minfeat = 300,
+        maxfeat = 10000,
+        maxmt = 20,
+        res = "0.01",
+        load = TRUE,
+        new = FALSE
+    ), output_file = paste0("sample_105086-009-002_lineages.html")
+)
+# "rmarkdown::render(input = paste0("02_scripts/lineage_annotation/Single.rmd"),output_format = "html_document",output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits/lineage_annotation",params = list(sample = "105946-002-005",fullname = "Mel",minUMI = 500,maxUMI = NA,minfeat = 300,maxfeat = 10000,maxmt = 20,res = "0.01",load = FALSE,new = TRUE), output_file = paste0("sample_105946-002-005_lineages.html"))"
+```

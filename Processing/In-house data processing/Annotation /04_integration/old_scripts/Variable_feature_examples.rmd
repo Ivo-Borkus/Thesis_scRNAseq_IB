@@ -1,0 +1,71 @@
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+```
+
+```{R Loading libraries}
+library(Seurat)
+library(SeuratData)
+library(ggplot2)
+library(patchwork)
+```
+
+```{R Following seurat integration vignette}
+obj <- LoadData("pbmcsca")
+obj <- subset(obj, nFeature_RNA > 1000)
+# currently, the object has two layers in the RNA assay: counts, and data
+obj[["RNA"]] <- split(obj[["RNA"]], f = obj$Method)
+obj <- NormalizeData(obj)
+obj <- FindVariableFeatures(obj)
+obj <- ScaleData(obj)
+obj <- RunPCA(obj)
+```
+
+```{R Following standard pipeline, fig.width  =20}
+# Vignette code:
+top10 <- head(VariableFeatures(obj), 10)
+plot1 <- VariableFeaturePlot(obj)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+plot1 + plot2
+```
+
+
+```{R Checking the PCA loaded variable features}
+# checking PCA loadings
+variable_features_PCA <- row.names(obj@reductions[["pca"]]@feature.loadings)
+
+print(length(VariableFeatures(obj)[VariableFeatures(obj) %in% variable_features_PCA]))
+```
+
+
+```{R checking highest standardized.variance hvf, fig.width = 20}
+hvf_info <- HVFInfo(obj)
+top_variable_genes <- hvf_info[order(hvf_info$variance.standardized, decreasing = TRUE), ]
+top_2000_genes <- rownames(top_variable_genes)[1:2000] # Extract top 100 genes
+
+top10 <- head(top_2000_genes, 10)
+plot1 <- VariableFeaturePlot(obj)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+plot1 + plot2
+```
+
+
+```{R Difference between Hvf and those used by the PCA}
+print(length(top_2000_genes[top_2000_genes %in% variable_features_PCA]))
+```
+
+```{R including session info}
+sessionInfo()
+```

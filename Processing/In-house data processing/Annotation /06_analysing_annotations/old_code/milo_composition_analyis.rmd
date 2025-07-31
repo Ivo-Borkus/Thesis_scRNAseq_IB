@@ -1,0 +1,5 @@
+pbmc_small_sce <- as.SingleCellExperiment(pbmc_small)
+pbmc_small_milo <- Milo(pbmc_small_sce)
+
+
+https://marionilab.github.io/miloR/articles/milo_demo.html

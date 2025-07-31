@@ -1,0 +1,141 @@
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+```
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+library(DoubletFinder)
+library(clustree)
+library(knitr)
+library(rscrublet)
+library(Matrix)
+library(patchwork)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/03_phase/011_merging_analysis_saved.rmd")
+```
+
+```{R Loading meta data, echo = FALSE, message = FALSE}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+
+nejm_colors <- paletteer::paletteer_d(
+    "ggsci::default_nejm", length(levels(as.factor(meta_data$sample_name)))
+)
+```
+```{R functions}
+umap_resolution <- function(seurat_obj, reduction_name) {
+    resolution_columns <- grep("^RNA_snn_res\\.",
+        colnames(seurat_obj@meta.data),
+        value = TRUE
+    )
+    umap_resolution_combined <- DimPlot(
+        object = seurat_obj,
+        reduction = reduction_name,
+        group.by = resolution_columns,
+        pt.size = 0.1,
+        label = TRUE
+    ) & NoLegend() &
+        theme(plot.title = element_text(size = 10)) &
+        NoAxes()
+    return(umap_resolution_combined)
+}
+feature_plot <- function(seurat_obj, reduction_name) {
+    fplot <- FeaturePlot(seurat_obj,
+        features = c("PTPRC", "CD4", "CD8A", "CD8B", "CD3D", "CD3E", "MS4A1", "CD79A", "CD79B", "S100A8", "CD14", "C1QC", "CD68", "LILRA4", "IL3RA", "PRDM16", "CLEC9A", "CD1C", "MAG", "MLANA"),
+        reduction = reduction_name,
+        ncol = 3
+    ) & NoAxes()
+    return(fplot)
+}
+
+umap_sample <- function(seurat_obj, reduction_name, title_name) {
+    umap_by_sample <- DimPlot(
+        object = seurat_obj,
+        reduction = reduction_name,
+        group.by = "sample",
+        pt.size = 0.1,
+        label = F, cols = nejm_colors
+    ) & theme(plot.title = element_text(size = 10)) &
+        NoAxes() & labs(title = title_name)
+}
+```
+
+```{R all merged}
+# output_umap <- "03_processing/10_integration/figs/all/umap_res/"
+output_umap <- "03_processing/10_integration/figs/all/"
+
+seurat_obj <- readRDS(file = "03_processing/10_integration/data/merged_scratch.rds")
+reduction_name <- "merged"
+umap_by_sample <- DimPlot(
+    object = seurat_obj,
+    reduction = paste0("umap.", reduction_name),
+    group.by = "sample",
+    pt.size = 0.1,
+    label = T, cols = c("red", "blue", "blue", "red", "green", "green", "green", "green")
+) & theme(plot.title = element_text(size = 10)) &
+    NoAxes() & labs(title = "merging of samples using all cells")
+umap_by_sample
+ggsave(umap_by_sample, file = paste0("03_processing/10_integration/figs/all/", reduction_name, "_primary.png"), height = 20, width = 20)
+```
+
+```{R immune merged}
+output_umap <- "03_processing/10_integration/figs/immune/"
+
+seurat_obj <- readRDS(file = "03_processing/10_integration/data/merged_subset_immune.rds")
+reduction_name <- "merged_subset_immune"
+umap_by_sample <- DimPlot(
+    object = seurat_obj,
+    reduction = paste0("umap.", reduction_name),
+    group.by = "sample",
+    pt.size = 0.1,
+    label = T, cols = c("red", "blue", "blue", "red", "green", "green", "green", "green")
+) & theme(plot.title = element_text(size = 10)) &
+    NoAxes() & labs(title = "merging of samples using immune cells")
+umap_by_sample
+ggsave(umap_by_sample, file = paste0("03_processing/10_integration/figs/immune/", reduction_name, "_primary.png"), height = 20, width = 20)
+```
+
+```{R tumour merged}
+output_umap <- "03_processing/10_integration/figs/tumour/"
+
+seurat_obj <- readRDS(file = "03_processing/10_integration/data/merged_subset_tumour.rds")
+reduction_name <- "merged_subset_tumour"
+umap_by_sample <- DimPlot(
+    object = seurat_obj,
+    reduction = paste0("umap.", reduction_name),
+    group.by = "sample",
+    pt.size = 0.1,
+    label = T, cols = c("red", "blue", "blue", "red", "green", "green", "green", "green")
+) & theme(plot.title = element_text(size = 10)) &
+    NoAxes() & labs(title = "merging of samples using tumour cells")
+
+umap_by_sample
+# ggsave(umap_resolution(seurat_obj, paste0("umap.", reduction_name)), file = paste0(output_umap_res, reduction_name, ".png"), height = 20, width = 20)
+# ggsave(feature_plot(seurat_obj, paste0("umap.", reduction_name)), file = paste0(output_umap_feat, reduction_name, ".png"), height = 20, width = 20)
+ggsave(umap_by_sample, file = paste0("03_processing/10_integration/figs/tumour/", reduction_name, "_primary.png"), height = 20, width = 20)
+```

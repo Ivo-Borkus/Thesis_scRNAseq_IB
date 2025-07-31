@@ -1,0 +1,136 @@
+---
+title: "Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+params:
+    dataset_name: "Lee"
+    cell_type: "T_cells"
+
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, fig.width = 20, fig.height = 20)
+```
+
+
+# Loading libraries and setting directories
+```{R loading libraries, include = F, echo = T}
+library(Seurat)
+
+# plotting and data science packages
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+
+# co-expression network analysis packages:
+library(WGCNA)
+library(hdWGCNA)
+library(knitr)
+# using the cowplot theme for ggplot
+theme_set(theme_cowplot())
+
+# set random seed for reproducibility
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+source("02_scripts/101_processing_external_datasets/qc_functions.R")
+set.seed(1123)
+# optionally enable multithreading
+enableWGCNAThreads(nThreads = 8)
+sample_col_list <- list(
+    Biermann = "ID",
+    Gonzalez = "sample_names",
+    Inhouse = "sample",
+    Lee = "Sample"
+)
+```
+
+```{R}
+seurat_list_prepared <- readRDS("03_processing/101_processing_exernal/data/processed_seurat_list/seurat_list_prepared.rds")
+```
+
+
+```{R setting parameters}
+dataset <- params$dataset_name
+cell_type_of_interest <- params$cell_type
+# reduction_name <- paste0(dataset, "_im")
+sample_col <- sample_col_list[[dataset]]
+seurat_obj <- seurat_list_prepared[[dataset]]
+
+# output_figs <- paste0("03_processing/102_hdWGCNA/figs/batch/", reduction_name, "_", cell_type_of_interest, "_")
+```
+
+
+
+```{R processing seurat, eval = new}
+Idents(seurat_obj) <- "generalised_ann_1"
+seurat_obj <- subset(x = seurat_obj, idents = cell_type_of_interest, invert = F)
+reduction_name <- paste0(dataset, "_im_", cell_type_of_interest)
+seurat_obj[["RNA"]] <- split(seurat_obj[["RNA"]], f = seurat_obj@meta.data[[sample_col]])
+
+seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = "vst", nfeatures = 2000, verbose = TRUE)
+hvf_info <- HVFInfo(seurat_obj)
+top_variable_genes <- hvf_info[order(hvf_info$variance.standardized, decreasing = TRUE), ]
+top_2000_genes <- rownames(top_variable_genes)[1:2000]
+VariableFeatures(seurat_obj) <- top_2000_genes
+all.genes <- rownames(seurat_obj)
+seurat_obj <- ScaleData(object = seurat_obj, vars.to.regress = c("percent_mt"), features = top_2000_genes, verbose = FALSE)
+seurat_obj <- RunPCA(
+    object = seurat_obj, nfeatures.print = 5, ndims.print = 1:2, reduction.name = paste0("pca_", reduction_name)
+)
+ElbowPlot(seurat_obj, reduction = paste0("pca_", reduction_name), ndims = 100)
+VizDimLoadings(seurat_obj, dims = 1:5, reduction = paste0("pca_", reduction_name), nfeatures = 15)
+
+seurat_obj <- IntegrateLayers(
+    object = seurat_obj, method = HarmonyIntegration,
+    orig.reduction = paste0("pca_", reduction_name), new.reduction = paste0("harmony_pca.", reduction_name),
+    verbose = TRUE
+)
+seurat_obj <- FindNeighbors(seurat_obj, reduction = paste0("harmony_pca.", reduction_name), dims = 1:25)
+seurat_obj <- RunUMAP(seurat_obj, reduction = paste0("harmony_pca.", reduction_name), dims = 1:25, reduction.name = paste0("umap.harmony.", reduction_name))
+
+seurat_obj <- JoinLayers(seurat_obj)
+```
+
+```{R saving seurat. eval = new}
+saveRDS(seurat_obj, file = paste0("03_processing/102_hdWGCNA/data/testing_settings/hvf/", dataset, "_subset_", cell_type_of_interest, ".rds"))
+```
+
+```{R}
+FeaturePlot(seurat_obj,
+    reduction = paste0("umap.harmony.", reduction_name),
+    features = c("CD8A", "CD3E", "CD3D", "CD68", "CD163", "IGHG3", "MS4A1")
+) & NoAxes()
+Idents(seurat_obj) <- "generalised_ann_1"
+VlnPlot(seurat_obj, features = c("CD8A", "CD3E", "CD3D", "CD68", "CD163", "IGHG3", "MS4A1"))
+seurat_obj %>% Reductions()
+DimPlot(seurat_obj,
+    reduction = paste0("umap.harmony.", reduction_name),
+    label = T
+) & NoAxes()
+```
+
+
+```{R}
+
+```
+
+
+
+
+```{R}
+seurat_obj <- ConstructNetwork(
+    seurat_obj,
+    method = "tree",
+    tom_name = "TOM_matrix_6", # name of the topoligical overlap matrix written to disk
+    deepSplit = 4, # Probably the most accurate, but depends on the graph, as it is a balance between sensitivity and robustness
+    overwrite_tom = T,
+    detectCutHeight = 0.999,
+    minModuleSize = 50,
+    mergeCutHeight = 0.01
+)
+PlotDendrogram(seurat_obj, main = "Tcell hdWGCNA Dendrogram_4")
+```

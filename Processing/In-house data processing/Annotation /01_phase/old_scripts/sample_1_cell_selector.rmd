@@ -1,0 +1,235 @@
+
+---
+title: "Analysis of singlecellRNAseq sample 105086-009-002"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+---
+
+# loading in data
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = TRUE) # nolint
+```
+
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+library(DoubletFinder)
+library(clustree)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/QC_per_sample/sample_1.rmd")
+```
+
+# Parameters
+
+```{R Parameters, echo = TRUE}
+sample <- "105086-009-002"
+minUMI <- 500
+maxUMI <- NA
+minfeat <- 300
+maxfeat <- 10000
+maxmt <- 20
+res <- "0.01"
+set.seed(91774)
+```
+
+```{R Loading data, echo = FALSE, message = FALSE}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+index <- match(sample, meta_data$sample_name)
+# Before PCA object
+seurat_obj <- readRDS(file = paste0(here(), "/03_processing/05_Neighbours/data/subsets/", sample, "_NN.rds"))
+```
+
+```{R plotting current sample}
+nejm_colors <- paletteer::paletteer_d(
+    "ggsci::default_nejm", length(levels(as.factor(meta_data$sample_name)))
+)
+conv_data <- type_convert(meta_data) # Convert all of the characters back into numeric etc.
+
+conv_data <- conv_data %>%
+    mutate(highlight = ifelse(sample_name == sample, "highlight", "default"))
+
+cell_count_gg <- ggplot(
+    data = conv_data,
+    mapping = aes(x = sample_name, y = Cells, fill = highlight)
+) +
+    geom_col() +
+    scale_fill_manual(values = c("highlight" = nejm_colors[index], "default" = "grey")) + # Custom colors
+    labs(
+        title = "Cell count per sample",
+        x = "Sample name",
+        y = "Number of cells detected"
+    ) +
+    theme(
+        axis.title.x = element_text(),
+        axis.title.y = element_text(),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none",
+        axis.title = element_text()
+    ) +
+    geom_text(aes(label = Cells), vjust = -1.5)
+
+cell_count_gg
+```
+
+
+# chunk 1
+
+
+```{R resolutions}
+res_values <- c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 4)
+seurat_obj <- FindClusters(seurat_obj, resolution = res_values, algorithm = 4)
+seurat_obj <- RunUMAP(seurat_obj, dims = 1:10, reduction = "pca", reduction.name = "umap.unintegrated")
+
+clustered_res <- clustree(seurat_obj)
+
+resolution_columns <- grep("^RNA_snn_res\\.",
+    colnames(seurat_obj@meta.data),
+    value = TRUE
+)
+
+
+umap_resolution_combined <- DimPlot(
+    object = seurat_obj,
+    reduction = "umap.unintegrated",
+    group.by = resolution_columns,
+    pt.size = 0.05,
+    label = TRUE
+) & NoLegend() &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+
+# pdf(file = "03_processing/07_Subclustering/figs/subclusteringres.pdf")
+clustered_res
+umap_resolution_combined
+```
+
+
+```{R}
+Idents(seurat_obj) <- "RNA_snn_res.4"
+# seurat_obj <- FindSubCluster(seurat_obj, cluster = "6", graph.name = "RNA_snn", subcluster.name = "subclusters")
+str(seurat_obj)
+unique(seurat_obj@meta.data$subclusters)
+cells.located@meta.data
+### Subclustering
+
+umap_subclusters_2 <- DimPlot(
+    object = seurat_obj,
+    reduction = "umap.unintegrated",
+    # group.by = "subclusters",
+    pt.size = 0.05,
+    label = TRUE
+) &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+```
+
+```{R}
+
+
+cluster_counts <- table(Idents(seurat_obj))
+cluster_df <- as.data.frame(cluster_counts)
+colnames(cluster_df) <- c("Cluster", "Cell_Count")
+
+cluster_count_plot_01 <- ggplot(cluster_df, aes(x = Cluster, y = Cell_Count, fill = Cluster)) +
+    geom_bar(stat = "identity") +
+    theme_minimal() +
+    labs(
+        title = paste("Number of Cells per Cluster - Resolution", 0.1),
+        x = "Cluster", y = "Number of Cells"
+    ) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+
+
+
+
+```{R}
+cells.located <- CellSelector(plot = umap_subclusters_2, ident = "weird_cluster", object = seurat_obj)
+Idents(cells.located)
+Idents(seurat_obj)
+cell_selected <- DimPlot(
+    object = cells.located,
+    reduction = "umap.unintegrated",
+    # group.by = "subclusters",
+    pt.size = 0.05,
+    label = TRUE
+) &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+cell_selected
+cluster_counts <- table(Idents(cells.located))
+cluster_df <- as.data.frame(cluster_counts)
+colnames(cluster_df) <- c("Cluster", "Cell_Count")
+
+cluster_count_plot_01 <- ggplot(cluster_df, aes(x = Cluster, y = Cell_Count, fill = Cluster)) +
+    geom_bar(stat = "identity") +
+    theme_minimal() +
+    labs(
+        title = paste("Number of Cells per Cluster - Resolution", 0.1),
+        x = "Cluster", y = "Number of Cells"
+    ) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ <- FindAllMarkers(
+    object = cells.located,
+    only.pos = TRUE, min.pct = 0.25,
+    logfc.threshold = 0.25
+)
+
+excel_sheet <- function(markers, name) {
+    library(writexl)
+    output_dir <- paste0(here(), "/", "03_processing/07_Subclustering/data/subsets/lineage/markers/")
+    print(paste0("Output will be put in: ", output_dir, name, ".xlsx"))
+    if (file.exists(output_dir)) {
+        markers %>%
+            arrange(cluster, desc(avg_log2FC)) %>% # Arrange within each cluster
+            group_by(cluster) %>%
+            select(cluster, pct.1, pct.2, p_val, p_val_adj, avg_log2FC, gene) %>%
+            group_split() %>% # Split into list by 'cluster'
+            setNames(unique(markers$cluster)) %>% # Name list elements
+            writexl::write_xlsx(paste0(output_dir, name, ".xlsx"))
+    } else {
+        stop("Directory does not exist")
+    }
+}
+# nolint
+excel_sheet(cells.located.markers, "weird_clusters")
+```
+
+```{R saving seurat, eval = FALSE}
+saveRDS(seurat_obj, file = paste0("03_processing/07_Subclustering/data/subsets/lineage/", sample, ".rds"))
+```
+
+
+```{R listing session dependencies, echo = TRUE, include = TRUE}
+sessionInfo()
+```
+
+
+```{R, echo = FALSE, eval = FALSE}
+rmarkdown::render(
+    input = paste0("02_scripts/lineage_annotation/sample_", index, ".rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits/lineage_annotation",
+    output_file = paste0("sample_", index, "_lineages.html")
+)
+```

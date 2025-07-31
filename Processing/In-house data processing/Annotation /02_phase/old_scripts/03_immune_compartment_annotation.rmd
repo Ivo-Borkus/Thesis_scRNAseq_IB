@@ -1,0 +1,410 @@
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+```
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+library(DoubletFinder)
+library(clustree)
+library(knitr)
+library(rscrublet)
+library(Matrix)
+library(patchwork)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+```
+
+```{R Loading meta data, echo = FALSE, message = FALSE}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+output_umap_res <- "03_processing/10_integration/figs/umap_res/"
+output_umap_feat <- "03_processing/10_integration/figs/umap_feature/"
+nejm_colors <- paletteer::paletteer_d(
+    "ggsci::default_nejm", length(levels(as.factor(meta_data$sample_name)))
+)
+```
+
+```{R functions, eval = FALSE}
+excel_sheet <- function(markers, output_dir, name) {
+    library(writexl)
+    print(paste0("Output will be put in: ", output_dir, name, ".xlsx"))
+    if (file.exists(output_dir)) {
+        markers %>%
+            arrange(cluster, desc(avg_log2FC)) %>% # Arrange within each cluster
+            group_by(cluster) %>%
+            select(cluster, pct.1, pct.2, p_val, p_val_adj, avg_log2FC, gene) %>%
+            group_split() %>% # Split into list by 'cluster'
+            setNames(unique(markers$cluster)) %>% # Name list elements
+            writexl::write_xlsx(paste0(output_dir, name, ".xlsx"))
+    } else {
+        stop("Directory does not exist")
+    }
+}
+```
+
+```{R immune compartment analysis per sample}
+processed_list <- readRDS(file = "03_processing/09_subset_annotation/data/processed_list.rds")
+output_marker <- "03_processing/09_subset_annotation/per_sample/sample_7/marker_list/"
+output_fig <- "03_processing/09_subset_annotation/per_sample/sample_7/fig/"
+```
+
+```{R, eval = TRUE, include = TRUE}
+seurat_obj <- processed_list[[7]] # sample 7 analysis
+index <- 7
+res <- "0.7"
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+
+
+features <- FeaturePlot(seurat_obj,
+    features = c("PTPRC", "CD4", "CD8A", "CD8B", "CD3D", "CD3E", "MS4A1", "CD79A", "CD79B", "S100A8", "CD14", "C1QC", "CD68", "LILRA4", "IL3RA", "CD1C", "MAG", "MLANA"),
+    reduction = "umap.unintegrated_im",
+    ncol = 3, order = TRUE
+) & NoAxes()
+features
+# ggsave(features, file = paste0(output_fig, "featureplot_sample_7.png"), height = 15, width = 15)
+
+
+
+seurat_obj.markers <- FindAllMarkers(
+    object = seurat_obj,
+    only.pos = TRUE, min.pct = 0.25,
+    logfc.threshold = 0.25
+)
+# excel_sheet(seurat_obj.markers, output_dir = output_marker, name = paste0(meta_data$sample_fullname[index]))
+```
+
+```{R integrated sample, eval = TRUE, fig.height = 15, fig.width = 15}
+seurat_obj <- readRDS(file = "03_processing/10_integration/data/merged_subset_immune.rds")
+res <- "1.5"
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+features <- FeaturePlot(seurat_obj,
+    features = c("PTPRC", "CD4", "CD8A", "CD8B", "CD3D", "CD3E", "MS4A1", "CD79A", "CD79B", "S100A8", "CD14", "C1QC", "CD68", "LILRA4", "IL3RA", "CD1C", "MAG", "MLANA"),
+    reduction = "umap.merged_subset_immune",
+    ncol = 3, order = TRUE
+) & NoAxes()
+resolution_columns <- grep("^RNA_snn_res\\.",
+    colnames(seurat_obj@meta.data),
+    value = TRUE
+)
+umap_resolution_combined <- DimPlot(
+    object = seurat_obj,
+    reduction = "umap.merged_subset_immune",
+    group.by = resolution_columns,
+    pt.size = 0.1,
+    label = TRUE
+) & NoLegend() &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+umap_resolution_combined
+features
+```
+```{R Dotplots of markers, include = TRUE, echo = FALSE}
+printing_dotplots <- function(seurat_obj) {
+    CD4_Naive_cm <- c("CD4", "ANXA1", "PASK", "SELL", "LEF1", "NOSIP", "CCR7", "TCF7", "ACTN1", "FOXP1", "KLF2", "ITGA6", "CD8A", "CD8B", "GZMK")
+    dotplot_CD4_Naive_cm <- DotPlot(object = seurat_obj, features = CD4_Naive_cm) + RotatedAxis() + labs(title = "CD4/CD8 naive or central memory cells last marker is negative")
+
+    ################################################################
+    CD4_Effector_Mem <- c("CD4", "ZNF683", "KLRB1", "PRDM1", "CX3CR1", "EOMES", "KLRG1", "TNFSF13B", "GZMK", "CCL5", "CCL4", "NKG7", "CD69", "ITGAE", "CD8A", "CD8B") # Last two are negative
+    dotplot_CD4_Effector_Mem <- DotPlot(object = seurat_obj, features = CD4_Effector_Mem) + RotatedAxis() + labs(title = "CD4 effector/memory cells (last two are negative markers)")
+
+    ################################################################
+    T_helper <- c("CD4", "CXCR3", "GATA3", "RORC", "RORA", "IL17F", "IL17A", "CCR6", "CXCR6", "IFNG", "IL4", "IL6ST", "CXCR5", "CXCL13", "PDCD1", "CD8A", "CD8B") # last two are negative
+    dotplot_T_helper <- DotPlot(object = seurat_obj, features = T_helper) + RotatedAxis() + labs(title = "T_helper cells (last two are negative markers)")
+
+    ################################################################
+    CD4_IFN_response <- c("CD4", "IFI16", "IFI35", "IFI44", "IFI44L", "IFI6", "IFIH1", "IFIT1", "IFIT2", "IFIT3", "IFIT5", "ISG15", "CD8A", "CD8B") # Last two are negative
+    dotplot_CD4_IFN_response <- DotPlot(object = seurat_obj, features = CD4_IFN_response) + RotatedAxis() + labs(title = "CD4_IFN_response cells (last two are negative markers)")
+
+    ################################################################
+    CD4_proliferative <- c("CD4", "MKI67", "TOP2A", "STMN1", "UBE2C", "PCLAF", "CENPF", "CDK1", "CD8A", "CD8B") # Last two are negative
+    dotplot_CD4_proliferative <- DotPlot(object = seurat_obj, features = CD4_proliferative) + RotatedAxis() + labs(title = "CD4_proliferative cells (last two are negative markers)")
+
+    ################################################################
+    Tregs <- c("IL32", "CCR7", "LEF1", "TCF7", "FOXP3", "CTLA4", "IL2RA", "ICOS", "TIGIT", "TOX2", "IKZF2", "GATA3", "CD28", "CD8A", "CD8B") # Last two are negative
+    dotplot_Tregs <- DotPlot(object = seurat_obj, features = Tregs) + RotatedAxis() + labs(title = "Tregs cells (last two are negative markers)")
+
+    ################################################################
+    GammaDelta <- c("TRGC1", "TRGC2", "TRDC", "CD8A", "CD8B", "CD4") # Last three are negative
+    dotplot_GammaDelta <- DotPlot(object = seurat_obj, features = GammaDelta) + RotatedAxis() + labs(title = "GammaDelta cells (last three are negative markers)")
+
+    ################################################################
+    CD8_Mem <- c("CD8A", "CD8B", "ZNF683", "KLRB1", "PRDM1", "CX3CR1", "EOMES", "KLRG1", "TNFSF13B", "CD4") # CD 4 is negatvie
+    dotplot_CD8_Mem <- DotPlot(object = seurat_obj, features = CD8_Mem) + RotatedAxis() + labs(title = "CD8_Mem cells (last one is negative markers)")
+
+    ################################################################
+    CD8_Cytotoxic <- c("CD8A", "CD8B", "GZMK", "GZMH", "CCL5", "CCL4", "NKG7", "CD69", "PRF1", "ITGAE", "CD4", "CST7", "GZMA", "CCL4L2", "KLRG1", "CTSW", "GZMM", "KLRK1", "HLA-C", "XCL2", "XCL1") # CD4 is negative
+    dotplot_CD8_Cytotoxic <- DotPlot(object = seurat_obj, features = CD8_Cytotoxic) + RotatedAxis() + labs(title = "CD8_Cytotoxic cells (CD4 is negative markers)")
+
+    ################################################################
+    CD8_IFN_response <- c("CD8A", "CD8B", "IFI16", "IFI35", "IFI44", "IFI44L", "IFI6", "IFIH1", "IFIT1", "IFIT2", "IFIT3", "IFIT5", "ISG15", "CD4") # CD4 is negative
+    dotplot_CD8_IFN_response <- DotPlot(object = seurat_obj, features = CD8_IFN_response) + RotatedAxis() + labs(title = "CD8_IFN_response cells (CD4 is negative markers)")
+
+    ################################################################
+    CD8_Exhausted <- c("CD8A", "CD8B", "HAVCR2", "LAG3", "PDCD1", "TIGIT", "TOX", "TOX2", "LAYN", "CTLA4", "CD4")
+    dotplot_CD8_Exhausted <- DotPlot(object = seurat_obj, features = CD8_Exhausted) + RotatedAxis() + labs(title = "CD8_Exhausted cells (CD4 is negative markers)")
+
+    ################################################################
+    CD8_Proliferative <- c("CD8A", "CD8B", "MKI67", "TOP2A", "STMN1", "UBE2C", "PCLAF", "CENPF", "CDK1", "CD4")
+    dotplot_CD8_Proliferative <- DotPlot(object = seurat_obj, features = CD8_Proliferative) + RotatedAxis() + labs(title = "CD8_Proliferative cells (CD4 is negative markers)")
+
+    ################################################################
+    NK <- c("NCAM1", "FCGR3A", "CX3CR1", "GNLY", "KLRC2", "KLRD1", "KLRC3", "KLRK1", "KLRC1", "NKG7")
+    dotplot_NK <- DotPlot(object = seurat_obj, features = NK) + RotatedAxis() + labs(title = "NK cells")
+
+    ################################################################
+    NaiveBcell <- c("MS4A1", "IGHD", "IGHM", "CCR7", "SELL", "TCL1A", "CD79A", "VPREB3", "FCRL1", "NIBAN3", "CD79B", "HVCN1", "CD72", "FCER2", "CD83", "CD19", "CD3E", "CD3G", "CD3D", "CD4", "CD8A", "CD8B") # last 6 are negative
+    dotplot_NaiveBcell <- DotPlot(object = seurat_obj, features = NaiveBcell) + RotatedAxis() + labs(title = "NaiveBcell (last 6 are negative markers)")
+
+    ################################################################
+    MemoryBcell <- c("CD79A", "MS4A1", "CD27", "TNFRSF13B", "ITGAX", "PRDM1", "CD24", "BANK1", "CD74", "HLA-DRA", "IGHA1", "BLK", "SPIB", "P2RX5", "IGHA2", "CD37", "CD3E", "CD3G", "CD3D", "CD4", "CD8A", "CD8B") # last 6 are negative
+    dotplot_MemoryBcell <- DotPlot(object = seurat_obj, features = MemoryBcell) + RotatedAxis() + labs(title = "MemoryBcell (last 6 are negative markers)")
+
+    ################################################################
+    Plasmacells <- c("MZB1", "SDC1", "IGHG1", "JCHAIN", "IGHA1", "IGHG3", "IGLC3", "IGLC1", "IGHGP", "DERL3", "IGHG4", "XBP1", "IRF4", "CD3E", "CD3G", "CD3D", "CD4", "CD8A", "CD8B") # last 6 are negative
+    dotplot_Plasmacells <- DotPlot(object = seurat_obj, features = Plasmacells) + RotatedAxis() + labs(title = "Plasmacells  (last 6 are negative markers)")
+
+    ################################################################
+    Monocytes <- c("CD14", "S100A8", "S100A9", "LYZ", "VCAN", "FCN1")
+    dotplot_Monocytes <- DotPlot(object = seurat_obj, features = Monocytes) + RotatedAxis() + labs(title = "Monocytes")
+
+    ################################################################
+    Non_classical_monocytes <- c("FCGR3A", "CX3CR1", "HLA-DRB1", "HLA-DRA")
+    dotplot_Non_classical_monocytes <- DotPlot(object = seurat_obj, features = Non_classical_monocytes) + RotatedAxis() + labs(title = "Non_classical_monocytes")
+
+    ################################################################
+    pDC <- c("IL3RA", "IRF7", "LILRA4", "IRF8", "JCHAIN", "GZMB")
+    dotplot_pDC <- DotPlot(object = seurat_obj, features = pDC) + RotatedAxis() + labs(title = "pDC")
+
+    ################################################################
+    DC1 <- c("CLEC9A", "XCR1", "IDO1", "CLNK", "ZNF366")
+    dotplot_DC1 <- DotPlot(object = seurat_obj, features = DC1) + RotatedAxis() + labs(title = "DC1")
+
+    ################################################################
+    DC2 <- c("CD1C", "FCER1A", "CLEC10A")
+    dotplot_DC2 <- DotPlot(object = seurat_obj, features = DC2) + RotatedAxis() + labs(title = "DC2")
+
+    ################################################################
+    DC3 <- c("CD1C", "S100A8", "S100A9", "ANXA1")
+    dotplot_DC3 <- DotPlot(object = seurat_obj, features = DC3) + RotatedAxis() + labs(title = "DC3")
+
+    ################################################################
+    DC4 <- c("ITGAX", "FCGR3A", "SERPINA1", "LILRB2", "SIGLEC10")
+    dotplot_DC4 <- DotPlot(object = seurat_obj, features = DC4) + RotatedAxis() + labs(title = "DC4 ")
+
+    ################################################################
+    DC5 <- c("AXL", "SIGLEC6", "CD22", "DAB2")
+    dotplot_DC5 <- DotPlot(object = seurat_obj, features = DC5) + RotatedAxis() + labs(title = "DC5")
+
+    ################################################################
+    HSC <- c("CD34", "KIT")
+    dotplot_HSC <- DotPlot(object = seurat_obj, features = HSC) + RotatedAxis() + labs(title = "HSC")
+    ################################################################
+    print(dotplot_CD4_Naive_cm)
+    print(dotplot_CD4_Effector_Mem)
+    print(dotplot_T_helper)
+    print(dotplot_CD4_IFN_response)
+    print(dotplot_CD4_proliferative)
+    print(dotplot_Tregs)
+    print(dotplot_GammaDelta)
+    print(dotplot_CD8_Mem)
+    print(dotplot_CD8_Cytotoxic)
+    print(dotplot_CD8_IFN_response)
+    print(dotplot_CD8_Exhausted)
+    print(dotplot_CD8_Proliferative)
+    print(dotplot_NK)
+    print(dotplot_NaiveBcell)
+    print(dotplot_MemoryBcell)
+    print(dotplot_Plasmacells)
+    print(dotplot_Monocytes)
+    print(dotplot_Non_classical_monocytes)
+    print(dotplot_pDC)
+    print(dotplot_DC1)
+    print(dotplot_DC2)
+    print(dotplot_DC3)
+    print(dotplot_DC4)
+    print(dotplot_DC5)
+    print(dotplot_HSC)
+}
+```
+
+
+```{R plot all dotplots haha, include = TRUE}
+printing_dotplots(seurat_obj)
+```
+
+
+
+```{R all samples seperately, fig.width = 15, fig.height = 20}
+res <- "1.5"
+for (index in 1:length(processed_list)) {
+    sample <- meta_data$sample_fullname[index]
+    seurat_obj <- processed_list[[index]]
+    resolution_columns <- grep("^RNA_snn_res\\.",
+        colnames(seurat_obj@meta.data),
+        value = TRUE
+    )
+    umap_resolution_combined <- DimPlot(
+        object = seurat_obj,
+        reduction = "umap.unintegrated_im",
+        group.by = resolution_columns,
+        pt.size = 0.1,
+        label = TRUE
+    ) & NoLegend() &
+        theme(plot.title = element_text(size = 10)) &
+        NoAxes()
+    features <- FeaturePlot(seurat_obj,
+        # features = c("PTPRC", "CD4", "CD8A", "CD8B", "CD3D", "CD3E", "MS4A1", "CD79A", "CD79B", "S100A8", "CD14", "C1QC", "CD68", "LILRA4", "IL3RA", "CD1C", "MAG", "MLANA"),
+        features = c(
+            "PTPRC", # Immune
+            ## Lymphoid
+            "CD3D", "CD3E", # T cells
+            "CD4", "CD8B", # distinction between 4 and 8
+            "FOXP3", "IL2RA", # T regs
+            "NCAM1", # NK cells
+            "MS4A1", "CD79A", # B cells
+            "TCL1A", # Naive B cells
+            "BANK1", "BLK", # Memory/ activated B cells
+            "SDC1", "PRDM1", # Plasma cells
+            ## Myeloid
+            "S100A8", "CD14", # Monocytes
+            "CD163", "CD68", # Macrophage markers
+            "C1QC", # Tolerogenic macrophages
+            "P2RY12", "SLC2A5", # microglia
+            "SPP1", # specific subsets
+            "LILRA4", # pDCs
+            "CD1C", "CLEC10A", # DCs
+            "CD34", "KIT", # HSCs
+            "MAG", "MLANA" # other cells
+        ),
+        reduction = "umap.unintegrated_im",
+        ncol = 3
+    ) & NoAxes()
+    violin_QC_annotated <- VlnPlot(seurat_obj, features = c("nCount_RNA", "nFeature_RNA", "percent_mt", "doublet.score"), ncol = 2) &
+        theme(plot.title = element_text(size = 10))
+
+
+    cluster_counts <- table(Idents(seurat_obj))
+    cluster_df <- as.data.frame(cluster_counts)
+    colnames(cluster_df) <- c("Cluster", "Cell_Count")
+
+    counts_annotated <- ggplot(cluster_df, aes(x = Cluster, y = Cell_Count, fill = Cluster)) +
+        geom_bar(stat = "identity") +
+        theme_minimal() +
+        labs(
+            title = paste("Number of Cells per Cluster - Resolution", res),
+            x = "Cluster", y = "Number of Cells"
+        ) +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    violins_tcell <- VlnPlot(seurat_obj, features = c("CD3D", "CD3E", "CD4", "CD8A", "CD8B", "FOXP3"), ncol = 3) + plot_annotation("Violin plots of T cells (CD4/8 TREGS)", theme = theme(plot.title = element_text(hjust = 0.5, size = 15, face = "italic")))
+    violins_nk <- VlnPlot(seurat_obj, features = c("KLRB1", "NCAM1", "CD56")) + plot_annotation("Violin plots of Natural killer cells", theme = theme(plot.title = element_text(hjust = 0.5, size = 15, face = "italic")))
+    violins_bcell <- VlnPlot(seurat_obj, features = c("MS4A1", "CD79A", "CD79B", "TCL1A", "BANK1", "BLK", "SDC1", "PRDM1")) + plot_annotation("Violin plots of B cells (Naive/Memory/Plasma)", theme = theme(plot.title = element_text(hjust = 0.5, size = 15, face = "italic")))
+    violins_mono_macro <- VlnPlot(seurat_obj, features = c("S100A8", "CD14", "CD163", "CD68", "C1QC", "P2RY12", "SLC2A5", "SPP1"), ncol = 2) + plot_annotation("Violin plots of macro and monocytes (Mono/Macro/Tolerogenic/Microglia/SPP1+)", theme = theme(plot.title = element_text(hjust = 0.5, size = 15, face = "italic")))
+    violins_dendritic <- VlnPlot(seurat_obj, features = c("CD1C", "LILRA4")) + plot_annotation("Violin plots of cDCs and pDCs", theme = theme(plot.title = element_text(hjust = 0.5, size = 15, face = "italic")))
+    violins_HSC <- VlnPlot(seurat_obj, features = c("CD34", "KIT")) + plot_annotation("Violin plots of HSCs", theme = theme(plot.title = element_text(hjust = 0.5, size = 15, face = "italic")))
+    violins_others <- VlnPlot(seurat_obj, features = c("MAG", "MOG", "MLANA")) + plot_annotation("Violin plots of brain and melanoma", theme = theme(plot.title = element_text(hjust = 0.5, size = 15, face = "italic")))
+
+    print(umap_resolution_combined)
+    print(features)
+    print(violins_tcell)
+    print(violins_nk)
+    print(violins_bcell)
+    print(violins_mono_macro)
+    print(violins_dendritic)
+    print(violins_HSC)
+    print(violins_others)
+    print(violin_QC_annotated)
+    print(counts_annotated)
+}
+
+
+# for (index in 1:length(processed_list)) {
+#     sample <- meta_data$sample_fullname[index]
+#     cat(sample)
+#     seurat_obj <- processed_list[[index]]
+#     Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+#     features <- FeaturePlot(seurat_obj,
+#         features = c("PTPRC", "CD4", "CD8A", "CD8B", "CD3D", "CD3E", "MS4A1", "CD79A", "CD79B", "S100A8", "CD14", "C1QC", "CD68", "LILRA4", "IL3RA", "CD1C", "MAG", "MLANA"),
+#         reduction = "umap.unintegrated_im",
+#         ncol = 3, order = TRUE
+#     ) & NoAxes()
+#     print(features)
+#     # printing_dotplots(seurat_obj)
+# }
+```
+```{R random, eval = FALSE}
+rmarkdown::render(
+    input = paste0("02_scripts/02_phase/03_immune_compartment_annotation.rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits",
+    output_file = paste0("03_immune_compartment_annotation.html")
+)
+marker_genes <- list(
+    "CD4 Naive/CM" = c("CD4", "ANXA1", "PASK", "SELL", "LEF1", "NOSIP", "CCR7", "TCF7", "ACTN1", "FOXP1", "KLF2", "ITGA6", "CD8A-", "CD8B-", "GZMK-"),
+    "CD4 Effector/Mem" = c("CD4", "ZNF683", "KLRB1", "PRDM1", "CX3CR1", "EOMES", "KLRG1", "TNFSF13B", "GZMK", "CCL5", "CCL4", "NKG7", "CD69", "ITGAE", "CD8A-", "CD8B-"),
+    "T helper" = c("CD4", "CXCR3", "GATA3", "RORC", "RORA", "IL17F", "IL17A", "CCR6", "CXCR6", "IFNG", "IL4", "IL6ST", "CXCR5", "CXCL13", "PDCD1", "CD8A-", "CD8B-"),
+    "CD4 IFN response" = c("CD4", "IFI16", "IFI35", "IFI44", "IFI44L", "IFI6", "IFIH1", "IFIT1", "IFIT2", "IFIT3", "IFIT5", "ISG15", "CD8A-", "CD8B-"),
+    "CD4 Proliferative" = c("CD4", "MKI67", "TOP2A", "STMN1", "UBE2C", "PCLAF", "CENPF", "CDK1", "CD8A-", "CD8B-"),
+    "T reg" = c("IL32", "CCR7", "LEF1", "TCF7", "FOXP3", "CTLA4", "IL2RA", "ICOS", "TIGIT", "TOX2", "IKZF2", "GATA3", "CD28", "CD8A-", "CD8B-"),
+    "Gamma Delta" = c("TRGC1", "TRGC2", "TRDC", "CD8A-", "CD8B-", "CD4-"),
+    "CD8 Naive/CM" = c("CD4-", "ANXA1", "PASK", "SELL", "LEF1", "NOSIP", "CCR7", "TCF7", "ACTN1", "FOXP1", "KLF2", "ITGA6", "CD8A", "CD8B", "GZMK-"),
+    "CD8 Mem" = c("CD8A", "CD8B", "ZNF683", "KLRB1", "PRDM1", "CX3CR1", "EOMES", "KLRG1", "TNFSF13B", "CD4-"),
+    "CD8 Cytotoxic" = c("CD8A", "CD8B", "GZMK", "GZMH", "CCL5", "CCL4", "NKG7", "CD69", "PRF1", "ITGAE", "CD4-", "CST7", "GZMA", "CCL4L2", "KLRG1", "CTSW", "GZMH", "GZMM", "KLRK1", "HLA-C", "PRF1", "XCL2", "XCL1"),
+    "CD8 IFN response" = c("CD8A", "CD8B", "IFI16", "IFI35", "IFI44", "IFI44L", "IFI6", "IFIH1", "IFIT1", "IFIT2", "IFIT3", "IFIT5", "ISG15", "CD4-"),
+    "CD8 Exhausted" = c("CD8A", "CD8B", "HAVCR2", "LAG3", "PDCD1", "TIGIT", "TOX", "TOX2", "LAYN", "CTLA4", "CD4-"),
+    "CD8 Proliferative" = c("CD8A", "CD8B", "MKI67", "TOP2A", "STMN1", "UBE2C", "PCLAF", "CENPF", "CDK1", "CD4-"),
+    "NK" = c("NCAM1", "FCGR3A", "CX3CR1", "GNLY", "KLRC2", "KLRD1", "KLRC3", "KLRK1", "KLRC1", "GNLY", "NKG7"),
+    "Naive B cell" = c("MS4A1", "IGHD", "IGHM", "CCR7", "SELL", "TCL1A", "CD79A", "VPREB3", "FCRL1", "NIBAN3", "CD79B", "HVCN1", "CD72", "FCER2", "CD83", "CD19", "CD3E-", "CD3G-", "CD3D-", "CD4-", "CD8A-", "CD8B-"),
+    "Memory B cell" = c("CD79A", "MS4A1", "CD27", "TNFRSF13B", "ITGAX", "PRDM1", "CD24", "BANK1", "CD74", "HLA-DRA", "IGHA1", "BLK", "SPIB", "P2RX5", "IGHA2", "CD37", "CD3E-", "CD3G-", "CD3D-", "CD4-", "CD8A-", "CD8B-"),
+    "Plasma cells" = c("MZB1", "SDC1", "IGHG1", "JCHAIN", "IGHA1", "IGHG3", "IGLC3", "IGLC1", "IGHGP", "DERL3", "IGHG4", "XBP1", "IRF4", "CD3E-", "CD3G-", "CD3D-", "CD4-", "CD8A-", "CD8B-"),
+    "Monocytes" = c("CD14", "S100A8", "S100A9", "LYZ", "VCAN", "FCN1"),
+    "Non_classical monocytes" = c("FCGR3A", "CX3CR1", "HLA-DRB1", "HLA-DRA"),
+    "pDC" = c("IL3RA", "IRF7", "LILRA4", "IRF8", "JCHAIN", "GZMB"),
+    "DC1" = c("CLEC9A", "XCR1", "IDO1", "CLNK", "ZNF366"),
+    "DC2" = c("CD1C", "FCER1A", "CLEC10A"),
+    "DC3" = c("CD1C", "S100A8", "S100A9", "ANXA1"),
+    "DC4" = c("ITGAX", "FCGR3A", "SERPINA1", "LILRB2", "SIGLEC10"),
+    "DC5" = c("AXL", "SIGLEC6", "CD22", "DAB2"),
+    "HSC" = c("CD34", "KIT")
+)
+
+rmarkdown::render(
+    input = paste0("02_scripts/002_immune_compartment_annotation.rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits",
+    output_file = paste0("002_immune_compartment_annotation.html")
+)
+
+lineage_1 <- c("PTPRC")
+lineage_2 <- c("CD3D", "CD3E")
+lineage_3 <- c("CD4")
+lineage_4 <- c("CD8A", "CD8B")
+
+gene_positions <- 1:length(gene_list) # Indices of genes in DotPlot
+lineage_1_center <- mean(gene_positions[1:length(lineage_1)]) # Center for Lineage 1 label
+lineage_2_center <- mean(gene_positions[(length(lineage_2) + 1):length(gene_list)]) # Center for Lineage 2 label
+```

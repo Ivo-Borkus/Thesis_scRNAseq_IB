@@ -1,0 +1,186 @@
+---
+title: "Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 1
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+```{R sam package, eval = F}
+# install BiocManager
+install.packages("BiocManager")
+library(BiocManager)
+# install Bioconductor core packages
+BiocManager::install()
+
+# install devtools
+BiocManager::install("devtools")
+
+# install additional packages
+BiocManager::install(c("WGCNA", "UCell", "GenomicRanges", "GeneOverlap")) # gene overlap produces errors I think
+
+# install latest version of Seurat from CRAN
+install.packages("Seurat")
+
+devtools::install_github("smorabit/hdWGCNA", ref = "dev")
+```
+
+
+```{R loading libraries}
+library(Seurat)
+
+# plotting and data science packages
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+
+# co-expression network analysis packages:
+library(WGCNA)
+library(hdWGCNA)
+
+# using the cowplot theme for ggplot
+theme_set(theme_cowplot())
+
+# set random seed for reproducibility
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+source("02_scripts/101_processing_external_datasets/qc_functions.R")
+set.seed(1123)
+# optionally enable multithreading
+enableWGCNAThreads(nThreads = 8)
+```
+
+
+```{R loading seurat list}
+processed_seurat_list <- readRDS("03_processing/101_processing_exernal/data/immune/processed_seurat_list_immune_2.rds")
+```
+
+
+```{R preparing inputs for later fucntions}
+lee_immune <- processed_seurat_list[[3]]
+biermann_immune <- processed_seurat_list[[1]]
+gonzalez_immune <- processed_seurat_list[[2]]
+
+lee_immune <- JoinLayers(lee_immune)
+biermann_immune <- JoinLayers(biermann_immune)
+gonzalez_immune <- JoinLayers(gonzalez_immune)
+
+
+lee_immune@meta.data$nCount_RNA_log <- log(lee_immune@meta.data$nCount_RNA)
+lee_immune@meta.data$nFeature_RNA_log <- log(lee_immune@meta.data$nFeature_RNA)
+
+biermann_immune@meta.data$nCount_RNA_log <- log(biermann_immune@meta.data$nCount_RNA)
+biermann_immune@meta.data$nFeature_RNA_log <- log(biermann_immune@meta.data$nFeature_RNA)
+
+gonzalez_immune@meta.data$nCount_RNA_log <- log(gonzalez_immune@meta.data$nCount_RNA)
+gonzalez_immune@meta.data$nFeature_RNA_log <- log(gonzalez_immune@meta.data$nFeature_RNA)
+
+biermann_immune@meta.data$percent_mt <- biermann_immune@meta.data$percent.mt
+lee_immune@meta.data$percent_mt <- biermann_immune@meta.data$percent.mt
+```
+
+```{R immune cells pia data, echo = TRUE}
+seurat_obj <- readRDS(file = "03_processing/12_phase_5/data/seurat_ann_lvl_2_immune.rds")
+reduction_name <- "immune_no_doub"
+seurat_obj %>% levels()
+```
+
+```{R verifying clusters}
+# Dimplot of general markers
+# Myeloid marker genes
+Mgenes <- c("PTPRC", "CD8A", "CD4", "VCAN", "CD14", "CD68", "CD163", "TREM2", "APOE", "CXCL10", "CD1C", "FCER1A", "CLEC10A", "S100A9", "S100A10", "S100A12", "P2RY12", "SLC2A5", "TMEM119", "LILRA4", "FTL", "FCGR3A", "CLEC9A", "CLNK", "CCR7", "LAMP3", "FSCN1", "OTOA", "SPP1")
+
+# dot_markers <- DotPlot(seurat_obj, features = Mgenes, cluster.idents = TRUE) + RotatedAxis()
+# ggsave(dot_markers, file = paste0(output_figs, "Dotplot_Myeloids_annotated.png"),width = 20, height = 10)
+
+
+# T-cells marker genes
+Tgenes <- c("PTPRC", "CD8A", "CD8B", "CD4", "LAG3", "CX3CR1", "CCR7", "SELL", "NCAM1", "NKG7", "KLRB1", "FOXP3", "TOP2A", "MKI67", "PDCD1", "HAVCR2", "LYVE1", "TMEM119", "FCGR3A", "LILRA4", "MLANA")
+# dot_markers <- DotPlot(seurat_obj, features = Tgenes, cluster.idents = TRUE) + RotatedAxis()
+
+# ggsave(dot_markers, file = paste0(output_figs, "Dotplot_tgenes_annotated.png"), width = 15, height = 10)
+
+
+combined <- DotPlot(seurat_obj, features = unique(c(Mgenes, Tgenes)), cluster.idents = TRUE) + RotatedAxis()
+# ggsave(combined, file = paste0(output_figs, "Dotplot_combined_annotated.png"), width = 15, height = 10)
+```
+
+
+```{R}
+cell_anno_list <- list(
+    Biermann = c("cell_type_main", "cell_type_fine", "cell_type_int", "cell_cycle"),
+    Gonzalez = c("Cell_Type"),
+    Lee = c("Cell_type", "Cell_type.refined", "Cell_subtype")
+)
+
+seurat_list_prepared <- list(
+    Biermann = biermann_immune,
+    Gonzalez = gonzalez_immune,
+    Lee = lee_immune
+)
+```
+
+```{R}
+excel_sheet <- function(markers, output_dir, name) {
+    library(writexl)
+    print(paste0("Output will be put in: ", output_dir, name, ".xlsx"))
+    if (file.exists(output_dir)) {
+        markers %>%
+            arrange(cluster, desc(avg_log2FC)) %>% # Arrange within each cluster
+            group_by(cluster) %>%
+            select(cluster, pct.1, pct.2, p_val, p_val_adj, avg_log2FC, gene) %>%
+            group_split() %>% # Split into list by 'cluster'
+            setNames(unique(markers$cluster)) %>% # Name list elements
+            writexl::write_xlsx(paste0(output_dir, name, ".xlsx"))
+    } else {
+        stop("Directory does not exist")
+    }
+}
+sanitize_worksheet_names <- function(names) {
+    # Replace invalid Excel worksheet characters with "_"
+    gsub("[\\[\\]\\:\\*\\?/\\\\]", "_", names, perl = TRUE)
+}
+```
+
+```{R}
+output_figs <- "03_processing/101_processing_exernal/figs/checking_anno/"
+output_excel <- "03_processing/101_processing_exernal/data/immune_excel/checking_anno/"
+Mgenes <- c("PTPRC", "CD8A", "CD4", "VCAN", "CD14", "CD68", "CD163", "TREM2", "APOE", "CXCL10", "CD1C", "FCER1A", "CLEC10A", "S100A9", "S100A10", "S100A12", "P2RY12", "SLC2A5", "TMEM119", "LILRA4", "FTL", "FCGR3A", "CLEC9A", "CLNK", "CCR7", "LAMP3", "FSCN1", "OTOA", "SPP1")
+Tgenes <- c("PTPRC", "CD8A", "CD8B", "CD4", "LAG3", "CX3CR1", "CCR7", "SELL", "NCAM1", "NKG7", "KLRB1", "FOXP3", "TOP2A", "MKI67", "PDCD1", "HAVCR2", "LYVE1", "TMEM119", "FCGR3A", "LILRA4", "MLANA")
+for (name in names(cell_anno_list)) {
+    seurat_obj <- seurat_list_prepared[[name]]
+    print(name)
+    print("#####################################")
+    for (anno in cell_anno_list[[name]]) {
+        Idents(seurat_obj) <- anno
+        print(paste0("levels: ", anno))
+        seurat_obj %>%
+            levels() %>%
+            print()
+
+        seurat_obj[[anno]][is.na(seurat_obj[[anno]])] <- "Missing"
+        Idents(seurat_obj) <- anno
+
+
+        violin_p <- VlnPlot(seurat_obj, features = c("nCount_RNA", "nCount_RNA_log", "nFeature_RNA", "nFeature_RNA_log", "percent_mt"), ncol = 2)
+        ggsave(violin_p, file = paste0(output_figs, "Violin_", name, "_", anno, ".png"), height = 15, width = 15)
+        combined <- DotPlot(seurat_obj, features = unique(c(Mgenes, Tgenes)), cluster.idents = TRUE) + RotatedAxis()
+        ggsave(combined, file = paste0(output_figs, "Dotplot_", name, "_", anno, ".png"), height = 15, width = 15)
+        new_levels <- sanitize_worksheet_names(levels(seurat_obj))
+        names(new_levels) <- levels(seurat_obj)
+        seurat_obj <- RenameIdents(seurat_obj, new_levels)
+        marker_list <- FindAllMarkers(
+            object = seurat_obj,
+            only.pos = T,
+            min.pct = 0.25,
+            logfc.threshold = 0.25
+        )
+        excel_sheet(marker_list, output_excel, paste0("marker_list_", name, "_", anno))
+    }
+}
+```

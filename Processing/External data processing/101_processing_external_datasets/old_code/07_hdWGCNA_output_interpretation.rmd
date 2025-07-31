@@ -1,0 +1,194 @@
+---
+title: "Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+params:
+    dataset_name: "Lee"
+    cell_type: "T_cells"
+
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, fig.width = 20, fig.height = 20)
+```
+
+
+# Loading libraries and setting directories
+```{R loading libraries, include = F, echo = T}
+library(Seurat)
+
+# plotting and data science packages
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+
+# co-expression network analysis packages:
+library(WGCNA)
+library(hdWGCNA)
+library(knitr)
+# using the cowplot theme for ggplot
+theme_set(theme_cowplot())
+
+# set random seed for reproducibility
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+source("02_scripts/101_processing_external_datasets/qc_functions.R")
+set.seed(1123)
+# optionally enable multithreading
+enableWGCNAThreads(nThreads = 8)
+```
+
+# loading datasets and selecting the object of interest
+
+```{R loading dataset}
+seurat_hdwgcna <- readRDS("03_processing/102_hdWGCNA/data/Inhouse_im_T_cells_T_cells_subset_hdWGCNA_object.rds")
+seurat_list_prepared <- readRDS("03_processing/101_processing_exernal/data/processed_seurat_list/seurat_list_prepared.rds")
+overall_seurat <- seurat_list_prepared[["Inhouse"]]
+reduction_name <- "immuno_no_doub"
+```
+
+```{R}
+colnames(overall_seurat@meta.data)
+```
+
+## Projecting the modules on another dataset
+
+### Checking where the modules are expressed in other datasets, using radarplots for example.
+
+```{R}
+dataset <- "Inhouse"
+cell_type_of_interest <- "T_cells"
+seurat_hdwgcna <- ConstructNetwork(
+    seurat_hdwgcna,
+    tom_name = paste0("TOM_matrix_4_", dataset, "_", cell_type_of_interest), # name of the topoligical overlap matrix written to disk
+    deepSplit = 4, # Highest possible setting yields all possible modules to be found (very sensitive)
+    overwrite_tom = F
+)
+
+
+seurat_obj_project <- overall_seurat
+seurat_obj_project <- JoinLayers(seurat_obj_project)
+seurat_obj_project$sample %>% table()
+# Project modules from query to reference dataset
+seurat_obj_project <- ProjectModules(
+    seurat_obj = seurat_obj_project,
+    seurat_ref = seurat_hdwgcna,
+    vars.to.regress = c("percent_mt"), # optionally regress covariates when running ScaleData
+    group.by.vars = "sample", # column in seurat_query to run harmony on
+    wgcna_name_proj = "projected", # name of the new hdWGCNA experiment in the query dataset
+    wgcna_name = NULL # name of the hdWGCNA experiment in the ref dataset
+)
+seurat_obj_project %>% str()
+GetTOM(seurat_obj_project) %>% dim()
+seurat_hdwgcna %>% str()
+```
+
+```{R extract model connectivity on new data}
+seurat_obj_project <- ModuleConnectivity(
+    seurat_obj_project,
+    group.by = "generalised_ann_1", group_name = "T_cells"
+)
+
+seurat_obj_project <- ModuleExprScore(
+    seurat_obj_project,
+    method = "UCell"
+)
+
+GetActiveWGCNA(seurat_obj_project)
+
+seurat_obj_project@misc$active_wgcna
+```
+
+
+```{R extracting the ME scores}
+projected_hMEs <- GetModules(seurat_obj_project)
+
+MEs <- GetMEs(seurat_obj_project, F, "projected")
+```
+
+
+```{R plotting the modules}
+plot_list <- ModuleFeaturePlot(
+    seurat_obj_project,
+    features = "hMEs",
+    order = TRUE,
+    restrict_range = FALSE,
+    wgcna_name = "projected",
+    reduction = "umap.harmony.immune_no_doub"
+)
+
+# stitch together with patchwork
+wrap_plots(plot_list, ncol = 6)
+```
+
+```{R making a dotplot on the ann}
+# get the projected MEs
+projected_MEs <- GetMEs(seurat_obj_project)
+
+# add MEs to Seurat meta-data:
+seurat_obj_project@meta.data <- cbind(
+    seurat_obj_project@meta.data,
+    projected_MEs
+)
+
+# plot with Seurat's DotPlot function
+p <- DotPlot(
+    seurat_obj_project,
+    features = colnames(projected_MEs),
+    group.by = "ann_lvl_2"
+)
+
+# flip the x/y axes, rotate the axis labels, and change color scheme:
+p <- p +
+    RotatedAxis() +
+    scale_color_gradient2(high = "red", mid = "grey95", low = "blue") +
+    xlab("") + ylab("")
+
+p
+```
+
+
+
+```{R plotting random features}
+# Figures should be saved as the subsetted seurat:
+# output_figs <- paste0("03_processing/102_hdWGCNA/figs/batch/", reduction_name, "_", cell_type_of_interest, "_subset_")
+
+FeaturePlot(seurat_obj_project,
+    reduction = paste0("umap.harmony.", reduction_name),
+    features = c("CD8A", "CD3E", "CD3D", "CD68", "CD163", "IGHG3", "MS4A1")
+) & NoAxes()
+Idents(seurat_obj_project) <- "generalised_ann_1"
+VlnPlot(seurat_obj_project, features = c("CD8A", "CD3E", "CD3D", "CD68", "CD163", "IGHG3", "MS4A1"))
+seurat_obj_project %>% Reductions()
+DimPlot(seurat_obj_project,
+    reduction = paste0("umap.harmony.", reduction_name),
+    label = T
+) & NoAxes()
+```
+
+```{R netrep module preservation }
+# install.packages('NetRep')
+library(NetRep)
+```
+
+```{R plotting the modules on the annotations}
+# seurat_hdwgcna@meta.data$ann_lvl_1 %>% head()
+# seurat_obj$ <- do.call(rbind, strsplit(as.character(seurat_obj$generalised_ann_1), " "))[, 1]
+
+# ModuleRadarPlot(
+#     seurat_hdwgcna,
+#     group.by = "ann_lvl_1",
+#     barcodes = seurat_hdwgcna@meta.data %>% subset(generalised_ann_1 == "T_cells") %>% rownames(),
+#     axis.label.size = 4,
+#     grid.label.size = 4
+# )
+
+# seurat_hdwgcna@meta.data$ann_lvl_1 %>% table()
+
+# overall_seurat$ann_lvl_2 %>% table()
+# overall_seurat$ann_lvl_1 %>% table()
+```

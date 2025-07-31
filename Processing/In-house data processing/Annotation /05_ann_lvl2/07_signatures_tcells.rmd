@@ -1,0 +1,253 @@
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+# install.packages("languageserver")
+```
+
+```{R general functions, eval =T}
+library(here)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+output_figs <- "03_processing/13_phase_6/figs/metabolic/metabolic_new/"
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+source("02_scripts/04_integration/functions.R")
+source("02_scripts/06_analysing_annotations/utils.R")
+library(dittoSeq)
+
+
+```
+
+
+
+```{R}
+excel_sheet <- function(markers, output_dir, name) {
+    library(writexl)
+    print(paste0("Output will be put in: ", output_dir, name, ".xlsx"))
+    if (file.exists(output_dir)) {
+        markers %>%
+            arrange(cluster, desc(avg_log2FC)) %>% # Arrange within each cluster
+            group_by(cluster) %>%
+            select(cluster, pct.1, pct.2, p_val, p_val_adj, avg_log2FC, gene) %>%
+            group_split() %>% # Split into list by 'cluster'
+            setNames(unique(markers$cluster)) %>% # Name list elements
+            writexl::write_xlsx(paste0(output_dir, name, ".xlsx"))
+    } else {
+        stop("Directory does not exist")
+    }
+}
+output_excel <- "03_processing/13_phase_6/data/metabolic/"
+
+```
+
+```{R}
+seurat_obj <- readRDS( file ="03_processing/12_phase_5/data/integrated_immune_annotated_lvl2.rds")
+# dittoDimPlot(seurat_obj, reduction.use = paste0("umap.harmony.","immune_no_doub"), var = "ann_lvl_2",do.label = TRUE)
+reduction_name <- "immune_no_doub"
+
+tseur <- readRDS( file = "03_processing/12_phase_5/data/Tcell_seurat_annotated.rds")
+reduction_name <- "Tcell"
+
+low_mt_tseur <- readRDS(file = "03_processing/13_phase_6/data/metabolic/low_mt_tseur.rds")
+reduction_name <- "low_mt"
+
+high_mt_tseur <- readRDS(file = "03_processing/13_phase_6/data/metabolic/high_mt_tseur.rds")
+reduction_name <- "high_mt"
+
+
+```
+
+```{R}
+### Low MT
+cluster_names <- c("Proliferating_CD8", "Tcm_CD4", "Texh_CD8", "Tfh_cells", "Tem_CD8", "Teff_CD8", "Proliferating_CD4","Naive_CD8_NK_mix","Tregs_memory","Proliferating_CD8","Tregs","GammaDelta_CD8","Doublets","Cycling_gammadelta","NK","Doublets","Inactive_Tcells","Bad-Quality")
+cluster_names <- c("Proliferating_CD8_1a", "Tnaive", "Texterm_CD8", "Th_cells", "Teff_exh_CD8", "Teff_CD8", "Proliferating_CD4","Tem_CD8","Tregs_memory","Proliferating_CD8_2a","Tregs_CCR8","GD_NKT_CD8","Doublets?","Proliferating_CD8_gd","NK","IFN_response","Tactive","Bad-Quality")
+Idents(object = low_mt_tseur) <- "RNA_snn_res.1.5"
+Idents(low_mt_tseur) %>% levels()
+new.cluster.ids <- cluster_names
+names(new.cluster.ids) <- levels(low_mt_tseur)
+low_mt_tseur <- RenameIdents(low_mt_tseur, new.cluster.ids )
+low_mt_tseur[["low_mt_annotation_specific"]] <- Idents(low_mt_tseur)
+Idents(low_mt_tseur) %>% levels()
+
+
+### High MT
+cluster_names <-  c("Bad-Quality", "Tnaive_b1", "Texh_CD8_b", "Tnaive_b2", "Proliferating_CD8_1b", "Tregs_b","Bad-Quality","Proliferating_CD8_2b","Teff_CD8_b","Bad-Quality")
+length(cluster_names)
+
+Idents(object = high_mt_tseur) <- "RNA_snn_res.0.9"
+Idents(high_mt_tseur) %>% levels()
+new.cluster.ids <- cluster_names
+names(new.cluster.ids) <- levels(high_mt_tseur)
+high_mt_tseur <- RenameIdents(high_mt_tseur, new.cluster.ids )
+high_mt_tseur[["high_mt_annotation_specific"]] <- Idents(high_mt_tseur)
+Idents(high_mt_tseur) %>% levels()
+
+
+low_mt_tseur@meta.data$mt_annotation <-  low_mt_tseur@meta.data$low_mt_annotation_specific
+high_mt_tseur@meta.data$mt_annotation <-  high_mt_tseur@meta.data$high_mt_annotation_specific
+cells_meta_trim_low <- subset(low_mt_tseur@meta.data, select = c("mt_annotation"))
+cells_meta_trim_high <- subset(high_mt_tseur@meta.data, select = c("mt_annotation"))
+
+meta_data_to_add <- NULL
+meta_data_to_add <- rbind(cells_meta_trim_low,cells_meta_trim_high)
+tseur <- AddMetaData(tseur,meta_data_to_add)
+table(tseur@meta.data$mt_annotation)
+
+
+
+dittoDimPlot(low_mt_tseur, reduction.use = paste0("umap.harmony.","Tcell"), var = "mt_annotation",split.by ="primary_sample")
+
+dittoDimPlot(tseur, reduction.use = paste0("umap.harmony.","Tcell"), var = "mt_annotation",split.by ="primary_sample")
+# ggsave(filename=paste0(output_figs,"umap_mt_annotated.png"), width = 15, height = 15)  
+
+dittoDimPlot(tseur, reduction.use = paste0("umap.harmony.","Tcell"), var = "mt_annotation",split.by ="mt_annotation")
+# ggsave(filename=paste0(output_figs,"umap_mt_annotated_sololy_clusters.png"), width = 15, height = 15)  
+
+dittoDimPlot(tseur, reduction.use = paste0("umap.harmony.","Tcell"), var = "mt_annotation",do.label = T)
+# ggsave(filename=paste0(output_figs,"umap_mt_annotated_sololy_clusters_labels.png"), width = 15, height = 15)  
+
+
+dittoDimPlot(low_mt_tseur, reduction.use = paste0("umap.harmony.","low_mt"), var = "mt_annotation", split.by = "primary_sample")
+ggsave(filename=paste0(output_figs,"umap_mt_annotated_primary.png"), width = 15, height = 15)  
+
+
+dittoDimPlot(high_mt_tseur, reduction.use = paste0("umap.harmony.","high_mt"), var = "mt_annotation", split.by = "primary_sample")
+ggsave(filename=paste0(output_figs,"umap_mt_annotated_primary_high.png"), width = 15, height = 15)  
+
+ncol(myeseur)
+
+```
+
+
+```{R also doing the same plot for myeloid}
+
+myeseur <- readRDS( file ="03_processing/12_phase_5/data/Myeloid_seurat_annotated.rds")
+reduction_name <- "Myeloid"
+Idents(object = myeseur) <- "RNA_snn_res.0.5"
+ncol(seurat_obj)
+new.cluster.ids <- c("Monocytes", "Macrophages", "Neutrophils", "Macrophage_OTOA", "Doublets", "CD1CA+_A", "Monocytic_MDSCs", "Microglia", "pDCs", "Macrophage_SPP1", "cDC1","mregDCs")
+names(new.cluster.ids) <- levels(myeseur)
+myeseur <- RenameIdents(myeseur, new.cluster.ids)
+myeseur[["ann_lvl_2_Myeloids_final"]] <- Idents(myeseur)
+Idents(myeseur) %>% levels()
+
+# dittoDimPlot(myeseur, reduction.use = paste0("umap.harmony.","Myeloid"), var = "ann_lvl_2_Myeloids_final",split.by ="primary_sample")
+
+# ggsave(filename=paste0(output_figs,"umap_myeloid_annotated_per_sample.png"), width = 15, height = 15)  
+
+
+# dittoDimPlot(myeseur, reduction.use = paste0("umap.harmony.","Myeloid"), var = "ann_lvl_2_Myeloids_final",do.label = TRUE)
+
+# ggsave(filename=paste0(output_figs,"umap_myeloid_annotated_label.png"), width = 15, height = 15)  
+
+```
+
+```{R All together}
+tseur@meta.data$ann_lvl_2 <- tseur@meta.data$mt_annotation
+myeseur@meta.data$ann_lvl_2 <- myeseur@meta.data$ann_lvl_2_Myeloids_final
+cells_meta_trim_t <- subset(tseur@meta.data, select = c("ann_lvl_2"))
+cells_meta_trim_m<- subset(myeseur@meta.data, select = c("ann_lvl_2"))
+meta_data_filtered <- subset(seurat_obj@meta.data, select = c("ann_lvl_1_filtered"))
+remaining_cell_ann <- meta_data_filtered %>%
+  filter(ann_lvl_1_filtered %in% c("Bcells", "PlasmaCells","Bad-quality")) %>% droplevels()
+remaining_cell_ann$ann_lvl_2 <- remaining_cell_ann$ann_lvl_1_filtered
+remaining_cell_ann$ann_lvl_1_filtered <- NULL
+
+meta_data_to_add <- NULL
+meta_data_to_add <- rbind(cells_meta_trim_t,cells_meta_trim_m)
+meta_data_to_add <- rbind(meta_data_to_add,remaining_cell_ann)
+seurat_obj <- AddMetaData(seurat_obj,meta_data_to_add)
+table(seurat_obj@meta.data$ann_lvl_2)
+
+
+Idents(seurat_obj) <- seurat_obj@meta.data$ann_lvl_2
+saveRDS(seurat_obj, file ="03_processing/12_phase_5/data/seurat_ann_lvl_2_immune.rds")
+
+```
+
+
+
+```{R plotting, eval = FALSE}
+dittoDimPlot(seurat_obj, reduction.use = paste0("umap.harmony.","immune_no_doub"), var = "ann_lvl_2",split.by ="primary_sample")
+ggsave(filename=paste0(output_figs,"annotated_per_sample umap.png"), width = 15, height = 15)  
+
+dittoDimPlot(seurat_obj, reduction.use = paste0("umap.harmony.","immune_no_doub"), var = "ann_lvl_2",do.label = T)
+
+ggsave(filename=paste0(output_figs,"annotated_umap.png"), width = 15, height = 15)  
+
+Idents(seurat_obj) <- seurat_obj@meta.data$ann_lvl_2
+
+table(Idents(seurat_obj))
+dittoDimPlot(seurat_obj, reduction.use = paste0("umap.harmony.","immune_no_doub"), var = "ann_lvl_2",do.label = T)
+seurat_obj@meta.data %>% colnames()
+seurat_obj@meta.data$ann_lvl_1_filtered %>% unique()
+
+dittoDimPlot(seurat_obj, reduction.use = paste0("umap.harmony.","immune_no_doub"), var = "ann_lvl_1_filtered",do.label = T)
+ggsave(filename=paste0(output_figs,"annotated_umap_all_lvl1_filtered.png"), width = 15, height = 15)  
+dittoBarPlot(seurat_obj, var = "primary_sample", group.by = "ann_lvl_1_filtered", color.panel = nejm_colors)
+ggsave(filename=paste0(output_figs,"annotated_barplot_all_lvl1_filtered.png"), width = 15, height = 15)  
+
+
+dittoBarPlot(seurat_obj, var = "primary_sample", group.by = "ann_lvl_2", color.panel = nejm_colors)
+ggsave(filename=paste0(output_figs,"annotated_barplot_all_deep_anno.png"), width = 15, height = 15)  
+
+Idents(seurat_obj) %>% colnames()
+head(Idents(seurat_obj))
+ggplot(seurat_obj@meta.data, aes(x = ann_lvl_2)) +
+    geom_bar(fill = "skyblue") + theme_minimal() + RotatedAxis()
+
+ggsave(filename=paste0(output_figs,"barplot_counts.png"), width = 15, height = 15)  
+
+
+
+
+dittoDimPlot(seurat_obj, reduction.use = paste0("umap.harmony.","immune_no_doub"), var = "ann_lvl_2",split.by = "ann_lvl_2")
+ggsave(filename=paste0(output_figs,"split_by_cluster.png"), width = 20, height = 20)  
+
+
+
+dittoDimPlot(seurat_obj, reduction.use = paste0("umap.harmony.","immune_no_doub"), var = "ann_lvl_2",split.by = "primary_sample")
+ggsave(filename=paste0(output_figs,"split_by_sample.png"), width = 20, height = 20)  
+
+```
+
+
+
+
+Patient get irradiation 2 weeks before the resection.
+
+Maybe the high-mt are living but have been hit by the radiation and the low-mt are maybe new.
+
+Immunogenic cell-death.
+What might happen by radiation 
+Epitopes spread, macros eat them, presenting. Everything gets a second effect.
+
+Myeloid don't expand that much.
+
+Do we see it at the single cell level
+
+Correlate the hemmorhage with the neutrophil content
+
+Same way of characterising the immune cells by where they are from.
+
+How many people are getting immune therapy after the radiation and resection:
+12/22
+
+1 patient Immune and radiation at the same time: Mel_03_unsorted
+
+All of these patients, are very sick (symptomatic brain met)
+

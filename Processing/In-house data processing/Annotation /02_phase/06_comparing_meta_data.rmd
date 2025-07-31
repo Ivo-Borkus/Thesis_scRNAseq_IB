@@ -1,0 +1,316 @@
+
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE, fig.height = 15, fig.width = 20) # nolint
+set.seed(91774)
+```
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+library(DoubletFinder)
+library(clustree)
+library(knitr)
+library(rscrublet)
+library(Matrix)
+library(patchwork)
+library(ggpubr)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+```
+
+```{R Loading meta data, echo = FALSE, message = FALSE}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_fullname) {
+    print(sample)
+}
+output_figs <- "03_processing/09_subset_annotation/figs/composition_graphs/"
+```
+
+
+```{R comparison to the meta-data, echo = FALSE,eval = F}
+df <- data.frame()
+i <- 0
+for (files in list.files("03_processing/09_subset_annotation/specific_data", full.names = TRUE)[1:8]) {
+    print(basename(files))
+    print(files)
+    sample <- sub("\\..*", "", basename(files))
+    seurat_obj <- readRDS(files)
+    cluster_counts <- table(seurat_obj$general_annotation_immune)
+    cluster_df <- as.data.frame(cluster_counts)
+    colnames(cluster_df) <- c("Cluster", "Cell_Count")
+    i <- i + 1
+
+    # cluster_df$sample <- sample
+    cluster_df$primary <- primary[i]
+    cluster_df$sample_2 <- primary_sample[i]
+    cluster_df$sample <- sample
+    df <- rbind(df, cluster_df)
+}
+
+df$Cluster <- factor(df$Cluster, levels = c(
+    "Myeloid",
+    "B-cells",
+    "Tumour", "doublets", "Bad-quality",
+    "NK", "Proliferating_NK", "Fhelper-cells", "Tregs",
+    "Proliferating_T-cells", "T-cells_naive", "CD8_T-cells", "CD4_T-cells", "T-cells"
+))
+
+
+
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data_2.csv"))
+meta_data <- meta_data[, c(4, 5, 27, 28)]
+meta_data$sample <- meta_data$sample_fullname
+meta_data <- meta_data[, c(2, 3, 4, 5)]
+
+simple_meta <- read.csv("03_processing/09_subset_annotation/figs/composition_graphs/simple_meta.csv", header = TRUE)
+df$sample <- gsub("^specific_", "", df$sample)
+
+new_df <- left_join(df, meta_data, by = "sample")
+
+# df %>%
+#     drop_na() %>%
+#     group_by(sample, Cluster) %>%
+#     summarise(n = sum(Cell_Count), .groups = "drop") %>%
+#     group_by(sample) %>%
+#     mutate(total = sum(n)) -> total_count_df
+# df %>% drop_na() -> df
+# df$total_count <- total_count_df$total
+df <- new_df
+myeloid_counts <- df[df$Cluster == "Myeloid", ]
+myeloid_pct_df <- myeloid_counts %>%
+    group_by(sample, sample_2) %>%
+    summarise(myeloid_pct = sum(Cell_Count) / unique(Cells_postqc) * 100) %>%
+    select(sample, sample_2, myeloid_pct)
+simple_meta$sample <- myeloid_pct$sample
+merged_data_M <- left_join(simple_meta, myeloid_pct, by = "sample")
+
+
+Tcell_counts <- df[df$Cluster %in% c(
+    "Fhelper-cells", "Tregs",
+    "Proliferating_T-cells", "T-cells_naive", "CD8_T-cells", "CD4_T-cells", "T-cells"
+), ]
+Tcell_pct_df <- Tcell_counts %>%
+    group_by(sample, sample_2) %>%
+    summarise(Tcell_pct = sum(Cell_Count) / unique(Cells_postqc) * 100) %>%
+    select(sample, Tcell_pct)
+merged_data_T <- left_join(merged_data_M, Tcell_pct_df, by = "sample")
+
+
+cd8cell_counts <- df[df$Cluster == "CD8_T-cells", ]
+cd8cell_pct_df <- cd8cell_counts %>%
+    group_by(sample, sample_2) %>%
+    summarise(cd8cell_pct = sum(Cell_Count) / unique(Cells_postqc) * 100) %>%
+    select(sample, cd8cell_pct)
+cd8cell_pct <- na.omit(cd8cell_pct)
+
+total_df_merged <- left_join(merged_data_T, cd8cell_pct_df, by = "sample")
+total_df_merged$cell_total <- meta_data$Cells
+total_df_merged$cell_postqc <- meta_data$Cells_postqc
+colnames(total_df_merged) <- c("sample", "Necrosis_lab", "Hemorrhage_lab", "vital_tumour_lab", "CD3_lab", "CD8_lab", "CD68_lab", "new_sample_name", "myeloid_pct", "Tcell_pct", "cd8cell_pct", "cell_total", "cell_postqc")
+conv_data <- type_convert(total_df_merged) # Convert all of the characters into numeric
+conv_data
+write.csv(conv_data, file = "correct_necrosis_df.csv")
+```
+
+
+```{R making the correlation plots}
+# conv_data <- read_csv(file = "correct_necrosis_df.csv")
+# primary_sample <- c("CUP", "Colon_1", "Colon_2", "Lung", "Melanoma_1_sorted", "Melanoma_2_sorted", "Melanoma_2_unsorted", "Melanoma_3_unsorted")
+# conv_data$sample <- primary_sample
+lm1 <- summary(lm(cell_total ~ Necrosis_lab, data = conv_data))
+round(cor(conv_data$cell_total, conv_data$Necrosis_lab, method = c("pearson")), 4) -> corr
+correlation_necrosis <- ggplot(conv_data, mapping = aes(x = Necrosis_lab, y = cell_total, label = sample)) +
+    geom_point() +
+    geom_text_repel(size = 4, color = "black", max.overlaps = Inf) +
+    annotate("text",
+        x = max(conv_data$Necrosis_lab), y = max(conv_data$cell_total),
+        label = paste("r = ", corr), hjust = 1, size = 5
+    ) +
+    geom_smooth(method = lm, color = "red", se = FALSE) & labs(title = paste0("Necrosis"))
+correlation_necrosis
+
+summary(lm(cell_total ~ vital_tumour_lab, data = conv_data))
+round(cor(conv_data$cell_total, conv_data$vital_tumour_lab, method = c("pearson")), 4) -> corr
+correlation_vitality <- ggplot(conv_data, mapping = aes(x = vital_tumour_lab, y = cell_total, label = sample)) +
+    geom_point() +
+    geom_text_repel(size = 4, color = "black", max.overlaps = Inf) +
+    annotate("text",
+        x = min(conv_data$vital_tumour_lab), y = max(conv_data$cell_total),
+        label = paste("r = ", corr), hjust = 0, size = 5
+    ) +
+    geom_smooth(method = lm, color = "red", se = FALSE) & labs(title = paste0("Vitality"))
+correlation_vitality
+
+summary(lm(myeloid_pct ~ CD68_lab, data = conv_data))
+round(cor(conv_data$myeloid_pct, conv_data$CD68_lab, method = c("pearson")), 4) -> corr
+correlation_myeloid <- ggplot(conv_data, mapping = aes(x = CD68_lab, y = myeloid_pct, label = sample)) +
+    geom_point() +
+    geom_text_repel(size = 4, color = "black", max.overlaps = Inf) +
+    annotate("text",
+        x = min(conv_data$CD68_lab), y = max(conv_data$myeloid_pct),
+        label = paste("r = ", corr), hjust = 0, size = 5
+    ) +
+    geom_smooth(method = lm, color = "red", se = FALSE) & labs(title = paste0("Myeloid"))
+correlation_myeloid
+
+summary(lm(Tcell_pct ~ CD3_lab, data = conv_data))
+round(cor(conv_data$Tcell_pct, conv_data$CD3_lab, method = c("pearson")), 4) -> corr
+correlation_Tcells <- ggplot(conv_data, mapping = aes(x = CD3_lab, y = Tcell_pct, label = sample)) +
+    geom_point() +
+    geom_text_repel(size = 4, color = "black", max.overlaps = Inf) +
+    annotate("text",
+        x = max(conv_data$CD3_lab), y = max(conv_data$Tcell_pct),
+        label = paste("r = ", corr), hjust = 1, size = 5
+    ) +
+    geom_smooth(method = lm, color = "red", se = FALSE) & labs(title = paste0("T-cells from annotation"))
+correlation_Tcells
+
+conv_data_noNa <- na.omit(conv_data)
+summary(lm(cd8cell_pct ~ CD8_lab, data = conv_data_noNa))
+round(cor(conv_data_noNa$cd8cell_pct, conv_data_noNa$CD8_lab, method = c("pearson")), 4) -> corr
+correlation_cd8 <- ggplot(conv_data_noNa, mapping = aes(x = CD8_lab, y = cd8cell_pct, label = sample)) +
+    geom_point() +
+    geom_text_repel(size = 4, color = "black", max.overlaps = Inf) +
+    annotate("text",
+        x = max(conv_data_noNa$CD8_lab), y = max(conv_data_noNa$cd8cell_pct),
+        label = paste("r = ", corr), hjust = 1, size = 5
+    ) +
+    geom_smooth(method = lm, color = "red", se = FALSE) & labs(title = paste0("CD8 from annotation"))
+correlation_cd8
+```
+```{R}
+grid.arrange(
+    correlation_necrosis, correlation_vitality,
+    correlation_myeloid, correlation_Tcells,
+    correlation_cd8,
+    ncol = 2, nrow = 3
+)
+
+grob <- arrangeGrob(correlation_necrosis, correlation_vitality,
+    correlation_myeloid, correlation_Tcells,
+    correlation_cd8,
+    ncol = 2, nrow = 3
+)
+
+ggsave(grob, file = paste0(output_figs, "correlations/correlation_arranged_samples.png"))
+```
+
+
+
+```{R working on CD3 positive cells, eval = T}
+subset_list <- lapply(list.files("03_processing/08_annotation/data", full.names = TRUE)[1:8], function(file) {
+    sampbvble <- sub("\\..*", "", basename(file))
+    seurat_obj <- readRDS(file)
+    # print(rownames(seurat_obj)[grep("CD3", rownames(seurat_obj))])
+    seurat_obj <- subset(x = seurat_obj, subset = CD3E > 0 | CD3D > 0)
+    print(ncol(seurat_obj))
+})
+
+conv_data$CD3_comp <- (unlist(subset_list) / conv_data$cell_postqc) * 100
+```
+
+```{R working on cd8 postive cells, eval = T}
+subset_list <- lapply(list.files("03_processing/08_annotation/data", full.names = TRUE)[1:8], function(file) {
+    sample <- sub("\\..*", "", basename(file))
+    seurat_obj <- readRDS(file)
+    # print(rownames(seurat_obj)[grep("CD3", rownames(seurat_obj))])
+    seurat_obj <- subset(x = seurat_obj, subset = CD8A > 0 | CD8B > 0)
+    print(ncol(seurat_obj))
+})
+conv_data$CD8_comp <- (unlist(subset_list) / conv_data$cell_postqc) * 100
+```
+
+
+```{R}
+summary(lm(CD3_comp ~ CD3_lab, data = conv_data))
+round(cor(conv_data$CD3_comp, conv_data$CD3_lab, method = c("pearson")), 4) -> corr
+correlation_CD3_exp <- ggplot(conv_data, mapping = aes(x = CD3_lab, y = CD3_comp, label = sample)) +
+    geom_point() +
+    geom_text_repel(size = 4, color = "black", max.overlaps = Inf) +
+    annotate("text",
+        x = max(conv_data$CD3_lab), y = max(conv_data$CD3_comp),
+        label = paste("r = ", corr), hjust = 1, size = 5
+    ) +
+    geom_smooth(method = lm, color = "red", se = FALSE) & labs(title = paste0("T-cells from expression"))
+correlation_CD3_exp
+
+
+summary(lm(CD8_comp ~ CD8_lab, data = conv_data))
+round(cor(conv_data$CD8_comp, conv_data$CD8_lab, method = c("pearson")), 4) -> corr
+correlation_CD8_exp <- ggplot(conv_data, mapping = aes(x = CD8_lab, y = CD8_comp, label = sample)) +
+    geom_point() +
+    geom_text_repel(size = 4, color = "black", max.overlaps = Inf) +
+    annotate("text",
+        x = max(conv_data$CD8_lab), y = min(conv_data$CD8_comp),
+        label = paste("r = ", corr), hjust = 1, size = 5
+    ) +
+    geom_smooth(method = lm, color = "red", se = FALSE) & labs(title = paste0("CD8 from expression"))
+correlation_CD8_exp
+```
+
+
+```{R correlation plots}
+grob1 <- arrangeGrob(correlation_necrosis, correlation_vitality,
+    correlation_myeloid, correlation_Tcells, correlation_CD3_exp,
+    correlation_cd8, correlation_CD8_exp,
+    ncol = 2, nrow = 4
+)
+
+grob2 <- arrangeGrob(correlation_Tcells, correlation_CD3_exp,
+    correlation_cd8, correlation_CD8_exp,
+    ncol = 2, nrow = 2
+)
+grob3 <- arrangeGrob(correlation_necrosis, correlation_vitality,
+    ncol = 2, nrow = 1
+)
+
+
+ggsave(grob1, file = paste0(output_figs, "correlations/correlation_arranged_all_sample.png"))
+ggsave(grob2, file = paste0(output_figs, "correlations/correlation_arranged_T-cells_sample.png"))
+ggsave(grob3, file = paste0(output_figs, "correlations/correlation_arranged_vitality_sample.png"))
+```
+
+
+```{R without myeloid outlier}
+without_out <- subset(conv_data, myeloid_pct < 40)
+summary(lm(myeloid_pct ~ CD68_lab, data = without_out))
+round(cor(without_out$myeloid_pct, without_out$CD68_lab, method = c("pearson")), 4) -> corr
+correlation_myeloid_without <- ggplot(without_out, mapping = aes(x = CD68_lab, y = myeloid_pct, label = sample)) +
+    geom_point() +
+    geom_text_repel(size = 4, color = "black", max.overlaps = Inf) +
+    annotate("text",
+        x = min(without_out$CD68_lab), y = max(without_out$myeloid_pct),
+        label = paste("r = ", corr), hjust = 0, size = 5
+    ) +
+    geom_smooth(method = lm, color = "red", se = FALSE) & labs(title = paste0("Myeloid without outlier"))
+correlation_myeloid_without
+```
+
+
+```{R plotting myeloid}
+grob3 <- arrangeGrob(correlation_myeloid, correlation_myeloid_without,
+    ncol = 1, nrow = 2
+)
+ggsave(grob3, file = paste0(output_figs, "correlations/correlation_arranged_myeloid_sample.png"))
+```

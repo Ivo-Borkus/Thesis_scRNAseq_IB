@@ -1,0 +1,195 @@
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+```
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+library(DoubletFinder)
+library(clustree)
+library(knitr)
+library(rscrublet)
+library(Matrix)
+library(patchwork)
+library(harmony)
+library(lisi)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+```
+
+```{R Loading in meta data, echo = FALSE, message = FALSE}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+```
+
+```{R setting variables}
+output_figs <- "03_processing/11_phase_4/figs/post_harmony/"
+nejm_colors <- paletteer::paletteer_d(
+    "ggsci::default_nejm", length(levels(as.factor(meta_data$sample_fullname)))
+)
+primary_colors <- c("#66c2a5", "#fc8d62", "#8da0cb", "#e78ac3")
+primary_colors_sample <- c("#66c2a5", "#fc8d62", "#fc8d62", "#8da0cb", "#e78ac3", "#e78ac3", "#e78ac3", "#e78ac3")
+primary <- c("CUP", "Colon", "Colon", "Lung", "Melanoma", "Melanoma", "Melanoma", "Melanoma")
+primary_sample <- c("CUP", "Colon_1", "Colon_2", "Lung", "Melanoma_1_sorted", "Melanoma_2_sorted", "Melanoma_2_unsorted", "Melanoma_3_unsorted")
+```
+
+```{R general functions, eval =T}
+source("02_scripts/04_integration/functions.R")
+```
+
+
+
+```{R immune cells}
+seurat_obj <- readRDS(file = "03_processing/11_phase_4/data/merged_subset_immune.rds")
+reduction_name <- "merged_subset_immune"
+```
+
+
+```{R Running harmony}
+obj <- IntegrateLayers(
+    object = seurat_obj, method = HarmonyIntegration,
+    orig.reduction = paste0("pca_", reduction_name), new.reduction = paste0("harmony_pca.", reduction_name),
+    verbose = TRUE
+)
+
+res_values <- c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.5)
+obj <- FindNeighbors(obj, reduction = paste0("harmony.", reduction_name), dims = 1:10)
+obj <- FindClusters(obj, resolution = res_values, algorithm = 4)
+obj <- RunUMAP(obj, reduction = paste0("harmony.", reduction_name), dims = 1:10, reduction.name = paste0("umap.harmony.", reduction_name))
+obj_join <- JoinLayers(obj)
+reduction_name <- "merged_subset_immune"
+Running_plots_post_harmony(obj, reduction_name)
+saveRDS(obj_join, file = "03_processing/11_phase_4/data/post_harmony_immune_subset.rds")
+```
+
+
+```{R}
+pca_embeddings <- Embeddings(obj, reduction = paste0("harmony.", reduction_name))
+pca_embeddings_small <- pca_embeddings[, 1:10]
+
+lis <- compute_lisi(pca_embeddings_small, obj@meta.data, c(
+    "general_annotation", "general_annotation_immune", "specific_annotation_immune", "sample"
+))
+summary(lis)
+```
+
+```{R comparing lisi scores}
+# seurat_obj
+pca_embeddings <- Embeddings(seurat_obj, reduction = paste0("pca_", reduction_name))
+pca_embeddings_small <- pca_embeddings[, 1:10]
+lis_no_int <- compute_lisi(pca_embeddings_small, seurat_obj@meta.data, c(
+    "general_annotation", "general_annotation_immune", "specific_annotation_immune", "sample"
+))
+
+summary(lis_no_int)
+```
+
+
+```{R comparing Lisis, echo = FALSE}
+lis_no_int$integrated <- "no"
+lis$integrated <- "yes"
+
+combined <- rbind(lis_no_int, lis)
+head(combined)
+colnames(combined)
+t_test_result <- t.test(sample ~ integrated, data = combined)
+plot <- ggplot(combined, mapping = aes(x = integrated, y = sample)) +
+    geom_boxplot() +
+    theme_minimal() & labs(title = "Lisi score for each cell based on the sample distribution before and after integration")
+ggsave(plot, filename = paste0(output_figs, "Lisi_samples.png"))
+```
+
+```{R chatgpt}
+compute_stats <- function(df) {
+    stats <- data.frame(
+        Feature = colnames(df),
+        Median = apply(df, 2, median, na.rm = TRUE),
+        Q95 = apply(df, 2, quantile, probs = 0.95, na.rm = TRUE),
+        Q0 = apply(df, 2, quantile, probs = 0.00, na.rm = TRUE) # Min value
+    )
+    return(stats)
+}
+
+no_int <- compute_stats(lis_no_int)
+int <- compute_stats(lis)
+int$integrated <- "Integrated"
+no_int$integrated <- "notIntegrated"
+
+summary_stats <- rbind(int, no_int)
+
+summary_stats_long <- summary_stats %>%
+    pivot_wider(names_from = integrated, values_from = c(Median, Q95, Q0))
+
+colnames(summary_stats_long)
+
+max_lisi <- max(c(summary_stats_long$Q95_Unintegrated, summary_stats_long$Q95_Integrated), na.rm = TRUE)
+ggplot(summary_stats_long, aes(x = Median_notIntegrated, y = Median_Integrated)) +
+    geom_point(size = 3, color = "blue") + # Points for each feature
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") + # Reference line (y=x)
+    geom_segment(aes(xend = Median_notIntegrated, yend = Median_Integrated), color = "black") + # Connecting lines
+    labs(
+        title = "LISI Score Comparison: Unintegrated vs Integrated",
+        x = "Unintegrated LISI Median",
+        y = "Integrated LISI Median"
+    ) +
+    theme_minimal()
+```
+
+
+
+
+```{R lets try}
+colnames(summary_stats_long)
+# Find max LISI score for axis limits
+max_lisi <- max(c(summary_stats_long$Q95_notIntegrated, summary_stats_long$Q95_Integrated), na.rm = TRUE)
+max_lisi <- 3
+# Create the plot
+Lisi_comparison <- ggplot(
+    summary_stats_long[summary_stats_long$Feature == "sample", ],
+    aes(x = Median_notIntegrated, y = Median_Integrated, label = Feature)
+) +
+    geom_point(size = 3, color = "black") +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +
+    geom_segment(aes(xend = Median_notIntegrated, yend = Median_Integrated), color = "black") +
+    geom_text_repel(size = 4, color = "black", max.overlaps = Inf) +
+    labs(
+        title = "LISI Score Comparison: Unintegrated vs Integrated",
+        x = "Unintegrated LISI Median",
+        y = "Integrated LISI Median"
+    ) +
+    xlim(0, max_lisi) +
+    ylim(0, max_lisi) +
+    coord_fixed() +
+    theme_minimal()
+
+
+ggsave(Lisi_comparison, file = paste0(output_figs, "lisi_comparison_2.png"))
+
+
+
+summary_stats_long[summary_stats_long$Feature == "sample", ]
+```

@@ -1,0 +1,127 @@
+
+# Chapter 2: Seurat workflow on filtered dataset
+
+## Normalisation
+```{R Normalisation}
+violin_preNorm <- VlnPlot(seurat_obj, features = "GAPDH") + NoLegend()
+seurat_obj <- NormalizeData(
+    object = seurat_obj,
+    normalization.method = "LogNormalize",
+    scale.facor = 10000
+)
+violin_postNorm <- VlnPlot(seurat_obj, features = "GAPDH") + NoLegend()
+```
+
+```{R saving seurat_obj}
+saveRDS(seurat_obj, file = paste0(here(), "/03_processing/02_Norm/data/subsets/", sample, "_norm.rds"))
+```
+
+```{R plotting_basic_QC, fig.align="center",fig.width=10,fig.height=5}
+grid.arrange(violin_preNorm, violin_postNorm,
+    ncol = 2, nrow = 1
+)
+```
+
+## Finding variable features
+```{R Finding variable features, eval = new, echo = TRUE, include = FALSE}
+seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = "vst", nfeatures = 2000)
+all.genes <- rownames(seurat_obj)
+seurat_obj <- ScaleData(object = seurat_obj, features = all.genes)
+saveRDS(seurat_obj, file = paste0(here(), "/03_processing/03_Scale/data/subsets/", sample, "_scaled.rds"))
+```
+
+```{R variable_feature plot , echo = FALSE,message= FALSE, fig.width = 10}
+Variable_genes_plot <- LabelPoints(
+    plot = VariableFeaturePlot(seurat_obj),
+    points = head(VariableFeatures(seurat_obj), 10),
+    repel = TRUE
+)
+grid.arrange(VariableFeaturePlot(seurat_obj) & NoLegend(), Variable_genes_plot & NoLegend(),
+    ncol = 2, nrow = 1
+)
+```
+
+## Running PCA dim reduction
+```{R running PCA,eval = new, echo=TRUE}
+seurat_obj <- RunPCA(
+    object = seurat_obj,
+    features = VariableFeatures(object = seurat_obj),
+    nfeatures.print = 5, ndims.print = 1:2
+)
+saveRDS(seurat_obj, file = paste0(here(), "/03_processing/04_PCA/data/subsets/", sample, "_PCA.rds"))
+```
+
+### Plotting PCA dim reduction
+```{R PCA plots before clustering, fig.align="center", echo = FALSE, include = TRUE,fig.width=10}
+PCA_dim_plot <- DimPlot(seurat_obj, reduction = "pca") + NoLegend()
+PCA_elbow <- ElbowPlot(seurat_obj)
+Genes_influence_PCA <- VizDimLoadings(seurat_obj,
+    dims = 1:5, reduction = "pca", nfeatures = 15
+)
+# ===================================== #
+grid.arrange(PCA_dim_plot, PCA_elbow,
+    ncol = 2, nrow = 1
+)
+```
+
+```{R, echo = TRUE, fig.height=10,fig.width=10}
+Genes_influence_PCA
+DimHeatmap(seurat_obj, dims = 1:6, cells = 100, balanced = TRUE)
+```
+
+## Clustering cells
+```{R clustering,eval = new, include = FALSE, echo = FALSE}
+seurat_obj <- FindNeighbors(seurat_obj, dims = 1:10, reduction = "pca")
+saveRDS(seurat_obj, file = paste0(here(), "/03_processing/05_Neighbours/data/subsets/", sample, "_NN.rds"))
+```
+
+```{R clustering and umap, echo = FALSE, include = FALSE, eval = new}
+res_values <- c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.5)
+seurat_obj <- FindClusters(seurat_obj, resolution = res_values, algorithm = 4)
+seurat_obj <- RunUMAP(seurat_obj, dims = 1:10, reduction = "pca", reduction.name = "umap.unintegrated")
+
+saveRDS(seurat_obj, file = paste0(here(), "/03_processing/06_Clustering/data/subsets/", sample, "_clusters.rds"))
+```
+
+
+### Plotting PCA feature plots
+```{R feature pcas, echo = FALSE}
+Feature_mt <- FeaturePlot(seurat_obj, features = "percent_mt", reduction = "pca", pt.size = 0.1)
+Feature_count <- FeaturePlot(seurat_obj, features = "nCount_RNA", reduction = "pca", pt.size = 0.1)
+Feature_ds <- FeaturePlot(seurat_obj, features = "doublet.score", reduction = "pca", pt.size = 0.1)
+Feature_feat <- FeaturePlot(seurat_obj, features = "nFeature_RNA", reduction = "pca", pt.size = 0.1)
+PCA_dim_plot_with_clusters <- DimPlot(seurat_obj, reduction = "pca")
+```
+
+```{R plotting feature pcas, fig.align="center",fig.width=10,fig.height=10}
+grid.arrange(Feature_mt, Feature_count,
+    Feature_ds, Feature_feat, PCA_dim_plot_with_clusters,
+    ncol = 2, nrow = 3
+)
+```
+
+
+## Umap projection of data
+```{R umap plot, ig.align="center",fig.width=10,fig.height=10}
+clustered_res <- clustree(seurat_obj)
+
+resolution_columns <- grep("^RNA_snn_res\\.",
+    colnames(seurat_obj@meta.data),
+    value = TRUE
+)
+
+umap_resolution_combined <- DimPlot(
+    object = seurat_obj,
+    reduction = "umap.unintegrated",
+    group.by = resolution_columns,
+    pt.size = 0.1,
+    label = TRUE
+) & NoLegend() &
+    theme(plot.title = element_text(size = 10)) &
+    NoAxes()
+
+
+clustered_res
+umap_resolution_combined
+```
+

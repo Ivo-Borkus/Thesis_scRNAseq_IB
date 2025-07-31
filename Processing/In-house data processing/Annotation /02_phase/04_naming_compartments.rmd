@@ -1,0 +1,440 @@
+
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE, fig.height = 15, fig.width = 20) # nolint
+set.seed(91774)
+```
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+library(DoubletFinder)
+library(clustree)
+library(knitr)
+library(rscrublet)
+library(Matrix)
+library(patchwork)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+```
+
+```{R Loading meta data, echo = FALSE, message = FALSE}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_fullname) {
+    print(sample)
+}
+nejm_colors <- paletteer::paletteer_d(
+    "ggsci::default_nejm", length(levels(as.factor(meta_data$sample_fullname)))
+)
+```
+
+```{R Loading processed list}
+processed_list <- readRDS(file = "03_processing/09_subset_annotation/data/processed_list.rds")
+```
+
+```{R output locations, echo = TRUE}
+output_dir <- paste0(here(), "/", "03_processing/09_subset_annotation/per_sample/")
+output_marker <- paste0(output_dir, "marker_list/")
+output_figs <- paste0(output_dir, "figs/")
+```
+
+```{R functions, eval = TRUE}
+find_marker <- function(seurat_obj) {
+    cat(paste("don't forget to set Ident, usage:", "res <- '0.1'", "Idents(seurat_obj) <- paste0('RNA_snn_res.'', res)", sep = "\n"))
+    seurat_obj.markers <- FindAllMarkers(
+        object = seurat_obj,
+        only.pos = TRUE, min.pct = 0.25,
+        logfc.threshold = 0.25, verbose = F
+    )
+    return(seurat_obj.markers)
+}
+
+excel_sheet <- function(markers, output_dir, name) {
+    library(writexl)
+    print(paste0("Output will be put in: ", output_dir, name, ".xlsx"))
+    if (file.exists(output_dir)) {
+        markers %>%
+            arrange(cluster, desc(avg_log2FC)) %>% # Arrange within each cluster
+            group_by(cluster) %>%
+            select(cluster, pct.1, pct.2, p_val, p_val_adj, avg_log2FC, gene) %>%
+            group_split() %>% # Split into list by 'cluster'
+            setNames(unique(markers$cluster)) %>% # Name list elements
+            writexl::write_xlsx(paste0(output_dir, name, ".xlsx"))
+    } else {
+        stop("Directory does not exist")
+    }
+}
+general_umap <- function(seurat_obj) {
+    umap_resolution_annotated <- DimPlot(
+        object = seurat_obj,
+        reduction = "umap.unintegrated_im",
+        pt.size = 0.5,
+        label = TRUE
+    ) & NoLegend() &
+        theme(plot.title = element_text(size = 10)) &
+        NoAxes()
+    return(umap_resolution_annotated)
+}
+
+general_features <- function(seurat_obj) {
+    features <- FeaturePlot(seurat_obj,
+        # features = c("PTPRC", "CD4", "CD8A", "CD8B", "CD3D", "CD3E", "MS4A1", "CD79A", "CD79B", "S100A8", "CD14", "C1QC", "CD68", "LILRA4", "IL3RA", "CD1C", "MAG", "MLANA"),
+        features = c(
+            "PTPRC", # Immune
+            ## Lymphoid
+            "CD3D", "CD3E", # T cells
+            "CD4", "CD8B", # distinction between 4 and 8
+            "FOXP3", "IL2RA", # T regs
+            "NCAM1", # NK cells
+            "MS4A1", "CD79A", # B cells
+            "TCL1A", # Naive B cells
+            "BANK1", "BLK", # Memory/ activated B cells
+            "SDC1", "PRDM1", # Plasma cells
+            ## Myeloid
+            "S100A8", "CD14", # Monocytes
+            "CD163", "CD68", # Macrophage markers
+            "C1QC", # Tolerogenic macrophages
+            "P2RY12", "SLC2A5", # microglia
+            "SPP1", # specific subsets
+            "LILRA4", # pDCs
+            "CD1C", "CLEC10A", # DCs
+            "CD34", "KIT", # HSCs
+            "MAG", "MLANA" # other cells
+        ), reduction = "umap.unintegrated_im",
+        ncol = 3
+    ) & NoAxes()
+    violin_QC_annotated <- VlnPlot(seurat_obj, features = c("nCount_RNA", "nFeature_RNA", "percent_mt", "doublet.score"), ncol = 2) &
+        theme(plot.title = element_text(size = 10))
+    print(features)
+    violin_QC_annotated
+}
+```
+
+# Sample 1
+```{R sample_1}
+index <- 1
+res <- "0.9"
+seurat_obj <- processed_list[[index]]
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+new.cluster.ids_general <- c("Myeloid", "Bad-quality", "CD8_T-cells")
+new.cluster.ids_specific <- c("Myeloid", "Bad-quality", "CD8_T-cells")
+new.cluster.ids_very_specific <- c("Myeloid_1", "Bad-quality_2", "CD8_T-cells_3")
+
+
+names(new.cluster.ids_general) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids_general)
+seurat_obj[["general_annotation_immune"]] <- Idents(seurat_obj)
+seurat_obj.markers <- find_marker(seurat_obj)
+print(general_umap(seurat_obj))
+
+excel_sheet(seurat_obj.markers, output_dir = output_marker, name = paste0("01_annotated_subclusters_general_", meta_data$sample_fullname[index]))
+# saveRDS(seurat_obj, file = paste0("03_processing/09_subset_annotation/data/", meta_data$sample_fullname[index], ".rds"))
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+names(new.cluster.ids_very_specific) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids_very_specific)
+seurat_obj[["very_specific_annotation_immune"]] <- Idents(seurat_obj)
+
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+names(new.cluster.ids_specific) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids_specific)
+seurat_obj[["specific_annotation_immune"]] <- Idents(seurat_obj)
+seurat_obj.markers <- find_marker(seurat_obj)
+print(general_umap(seurat_obj))
+print(general_features(seurat_obj))
+excel_sheet(seurat_obj.markers, output_dir = output_marker, name = paste0("02_annotated_subclusters_specific_", meta_data$sample_fullname[index]))
+
+saveRDS(seurat_obj, file = paste0("03_processing/09_subset_annotation/specific_data/specific_", meta_data$sample_fullname[index], ".rds"))
+```
+
+# Sample 2
+```{R Sample_2}
+index <- 2
+res <- "1.5"
+new.cluster.ids_general <- c("Bad-quality", "CD8_T-cells", "CD4_T-cells", "Myeloid", "CD4_T-cells", "Proliferating_T-cells", "CD8_T-cells", "Myeloid", "B-cells")
+new.cluster.ids_specific <- c("Bad-quality", "CD8_T-cells", "CD4_T-cells", "Neutrophils", "CD4_T-cells", "Proliferating_T-cells", "CD8_T-cells", "Macrophages", "B-cells")
+new.cluster.ids_very_specific <- c("Bad-quality_1", "CD8_T-cells_2", "CD4_T-cells_3", "Neutrophils_4", "CD4_T-cells_5", "Proliferating_T-cells_6", "CD8_T-cells_7", "Macrophages_8", "B-cells_9")
+
+seurat_obj <- processed_list[[index]]
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+
+names(new.cluster.ids_general) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids_general)
+seurat_obj[["general_annotation_immune"]] <- Idents(seurat_obj)
+seurat_obj.markers <- find_marker(seurat_obj)
+print(general_umap(seurat_obj))
+
+excel_sheet(seurat_obj.markers, output_dir = output_marker, name = paste0("01_annotated_subclusters_general_", meta_data$sample_fullname[index]))
+# saveRDS(seurat_obj, file = paste0("03_processing/09_subset_annotation/data/", meta_data$sample_fullname[index], ".rds"))
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+names(new.cluster.ids_very_specific) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids_very_specific)
+seurat_obj[["very_specific_annotation_immune"]] <- Idents(seurat_obj)
+
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+names(new.cluster.ids_specific) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids_specific)
+seurat_obj[["specific_annotation_immune"]] <- Idents(seurat_obj)
+seurat_obj.markers <- find_marker(seurat_obj)
+print(general_umap(seurat_obj))
+print(general_features(seurat_obj))
+excel_sheet(seurat_obj.markers, output_dir = output_marker, name = paste0("02_annotated_subclusters_specific_", meta_data$sample_fullname[index]))
+
+saveRDS(seurat_obj, file = paste0("03_processing/09_subset_annotation/specific_data/specific_", meta_data$sample_fullname[index], ".rds"))
+```
+
+# Sample 3
+```{R Sample_3}
+index <- 3
+res <- "0.9"
+new.cluster.ids_general <- c("T-cells", "T-cells", "Myeloid")
+new.cluster.ids_specific <- c("T-cells", "T-cells", "Macrophages")
+new.cluster.ids_very_specific <- c("T-cells_1", "T-cells_2", "Macrophages_3")
+
+seurat_obj <- processed_list[[index]]
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+names(new.cluster.ids_general) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids_general)
+seurat_obj[["general_annotation_immune"]] <- Idents(seurat_obj)
+seurat_obj.markers <- find_marker(seurat_obj)
+print(general_umap(seurat_obj))
+
+excel_sheet(seurat_obj.markers, output_dir = output_marker, name = paste0("01_annotated_subclusters_general_", meta_data$sample_fullname[index]))
+# saveRDS(seurat_obj, file = paste0("03_processing/09_subset_annotation/data/", meta_data$sample_fullname[index], ".rds"))
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+names(new.cluster.ids_very_specific) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids_very_specific)
+seurat_obj[["very_specific_annotation_immune"]] <- Idents(seurat_obj)
+
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+names(new.cluster.ids_specific) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids_specific)
+seurat_obj[["specific_annotation_immune"]] <- Idents(seurat_obj)
+seurat_obj.markers <- find_marker(seurat_obj)
+print(general_umap(seurat_obj))
+print(general_features(seurat_obj))
+excel_sheet(seurat_obj.markers, output_dir = output_marker, name = paste0("02_annotated_subclusters_specific_", meta_data$sample_fullname[index]))
+
+saveRDS(seurat_obj, file = paste0("03_processing/09_subset_annotation/specific_data/specific_", meta_data$sample_fullname[index], ".rds"))
+```
+
+# Sample 4
+
+```{R Sample_4}
+index <- 4
+res <- "0.9"
+new.cluster.ids_general <- c("Myeloid", "T-cells", "Tregs", "CD8_T-cells", "Myeloid", "CD8_T-cells", "T-cells", "Bad-quality", "NK", "NK", "NK", "Myeloid", "doublets", "Myeloid", "B-cells", "Myeloid")
+new.cluster.ids_specific <- c("Myeloid", "T-cells_naive", "Tregs", "CD8_T-cells", "Myeloid", "CD8_T-cells", "Fhelper-cells", "Bad-quality", "Proliferating_NK", "NK", "NK", "pDCs", "doublets", "Microglia", "B-cells", "mREGs_DC")
+new.cluster.ids_very_specific <- c("Myeloid_1", "T-cells_naive_2", "Tregs_3", "CD8_T-cells_4", "Myeloid_5", "CD8_T-cells_6", "Fhelper-cells_7", "Bad-quality_8", "Proliferating_NK_9", "NK_10", "NK_11", "pDCs_12", "doublets_13", "Microglia_14", "B-cells_15", "mREGs_DC_16")
+
+seurat_obj <- processed_list[[index]]
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+names(new.cluster.ids_general) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids_general)
+seurat_obj[["general_annotation_immune"]] <- Idents(seurat_obj)
+seurat_obj.markers <- find_marker(seurat_obj)
+print(general_umap(seurat_obj))
+
+excel_sheet(seurat_obj.markers, output_dir = output_marker, name = paste0("01_annotated_subclusters_general_", meta_data$sample_fullname[index]))
+# saveRDS(seurat_obj, file = paste0("03_processing/09_subset_annotation/data/", meta_data$sample_fullname[index], ".rds"))
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+names(new.cluster.ids_very_specific) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids_very_specific)
+seurat_obj[["very_specific_annotation_immune"]] <- Idents(seurat_obj)
+
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+names(new.cluster.ids_specific) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids_specific)
+seurat_obj[["specific_annotation_immune"]] <- Idents(seurat_obj)
+seurat_obj.markers <- find_marker(seurat_obj)
+print(general_umap(seurat_obj))
+print(general_features(seurat_obj))
+excel_sheet(seurat_obj.markers, output_dir = output_marker, name = paste0("02_annotated_subclusters_specific_", meta_data$sample_fullname[index]))
+
+saveRDS(seurat_obj, file = paste0("03_processing/09_subset_annotation/specific_data/specific_", meta_data$sample_fullname[index], ".rds"))
+```
+
+
+# Sample 5
+
+```{R Sample_5}
+index <- 5
+res <- "0.9"
+new.cluster.ids_general <- c("Myeloid", "Myeloid", "Myeloid", "Myeloid", "Bad-quality", "Myeloid", "Myeloid", "CD4_T-cells", "CD8_T-cells", "Myeloid", "Myeloid", "Proliferating_T-cells", "Myeloid")
+
+new.cluster.ids_specific <- c("Myeloid", "Myeloid", "DC", "Myeloid", "Bad-quality", "DC", "Monocytes", "CD4_T-cells", "CD8_T-cells", "Myeloid", "DC", "Proliferating_T-cells", "pDCs")
+new.cluster.ids_very_specific <- c("Myeloid_1", "Myeloid_2", "DC_3", "Myeloid_4", "Bad-quality_5", "DC_6", "Monocytes_7", "CD4_T-cells_8", "CD8_T-cells_9", "Myeloid_10", "DC_11", "Proliferating_T-cells_12", "pDCs_13")
+
+seurat_obj <- processed_list[[index]]
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+names(new.cluster.ids_general) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids_general)
+seurat_obj[["general_annotation_immune"]] <- Idents(seurat_obj)
+seurat_obj.markers <- find_marker(seurat_obj)
+print(general_umap(seurat_obj))
+
+excel_sheet(seurat_obj.markers, output_dir = output_marker, name = paste0("01_annotated_subclusters_general_", meta_data$sample_fullname[index]))
+# saveRDS(seurat_obj, file = paste0("03_processing/09_subset_annotation/data/", meta_data$sample_fullname[index], ".rds"))
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+names(new.cluster.ids_very_specific) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids_very_specific)
+seurat_obj[["very_specific_annotation_immune"]] <- Idents(seurat_obj)
+
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+names(new.cluster.ids_specific) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids_specific)
+seurat_obj[["specific_annotation_immune"]] <- Idents(seurat_obj)
+seurat_obj.markers <- find_marker(seurat_obj)
+print(general_umap(seurat_obj))
+print(general_features(seurat_obj))
+excel_sheet(seurat_obj.markers, output_dir = output_marker, name = paste0("02_annotated_subclusters_specific_", meta_data$sample_fullname[index]))
+
+saveRDS(seurat_obj, file = paste0("03_processing/09_subset_annotation/specific_data/specific_", meta_data$sample_fullname[index], ".rds"))
+```
+
+# Sample 6
+
+```{R Sample_6}
+index <- 6
+res <- "0.5"
+new.cluster.ids_general <- c("CD8_T-cells", "Myeloid", "CD4_T-cells", "CD8_T-cells", "Bad-quality", "T-cells", "Tregs", "B-cells", "Myeloid", "B-cells", "Myeloid", "Myeloid")
+
+new.cluster.ids_specific <- c("CD8_T-cells", "Myeloid", "CD4_T-cells", "CD8_T-cells", "Bad-quality", "T-cells", "Tregs", "Plasma_cells", "pDCs", "Memory_B_cells", "Microglia", "DC")
+new.cluster.ids_very_specific <- c("CD8_T-cells_1", "Myeloid_2", "CD4_T-cells_3", "CD8_T-cells_4", "Bad-quality_5", "T-cells_6", "Tregs_7", "Plasma_cells_8", "pDCs_9", "Memory_B_cells_10", "Microglia_11", "DC_12")
+
+
+
+seurat_obj <- processed_list[[index]]
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+names(new.cluster.ids_general) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids_general)
+seurat_obj[["general_annotation_immune"]] <- Idents(seurat_obj)
+seurat_obj.markers <- find_marker(seurat_obj)
+print(general_umap(seurat_obj))
+
+excel_sheet(seurat_obj.markers, output_dir = output_marker, name = paste0("01_annotated_subclusters_general_", meta_data$sample_fullname[index]))
+# saveRDS(seurat_obj, file = paste0("03_processing/09_subset_annotation/data/", meta_data$sample_fullname[index], ".rds"))
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+names(new.cluster.ids_very_specific) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids_very_specific)
+seurat_obj[["very_specific_annotation_immune"]] <- Idents(seurat_obj)
+
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+names(new.cluster.ids_specific) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids_specific)
+seurat_obj[["specific_annotation_immune"]] <- Idents(seurat_obj)
+seurat_obj.markers <- find_marker(seurat_obj)
+print(general_umap(seurat_obj))
+print(general_features(seurat_obj))
+excel_sheet(seurat_obj.markers, output_dir = output_marker, name = paste0("02_annotated_subclusters_specific_", meta_data$sample_fullname[index]))
+
+saveRDS(seurat_obj, file = paste0("03_processing/09_subset_annotation/specific_data/specific_", meta_data$sample_fullname[index], ".rds"))
+```
+
+# Sample 7
+
+```{R Sample_7}
+index <- 7
+res <- "0.5"
+new.cluster.ids_general <- c("T-cells", "T-cells", "T-cells", "Myeloid", "Bad-quality", "CD8_T-cells", "CD8_T-cells", "B-cells", "Myeloid", "Myeloid", "B-cells", "Myeloid")
+
+new.cluster.ids_specific <- c("T-cells", "T-cells", "T-cells", "Myeloid", "Bad-quality", "CD8_T-cells", "CD8_T-cells", "Plasma_cells", "Myeloid", "Microglia", "B-cells", "pDCs")
+new.cluster.ids_very_specific <- c("T-cells_1", "T-cells_2", "T-cells_3", "Myeloid_4", "Bad-quality_5", "CD8_T-cells_6", "CD8_T-cells_7", "Plasma_cells_8", "Myeloid_9", "Microglia_10", "B-cells_11", "pDCs_12")
+
+seurat_obj <- processed_list[[index]]
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+names(new.cluster.ids_general) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids_general)
+seurat_obj[["general_annotation_immune"]] <- Idents(seurat_obj)
+seurat_obj.markers <- find_marker(seurat_obj)
+print(general_umap(seurat_obj))
+
+excel_sheet(seurat_obj.markers, output_dir = output_marker, name = paste0("01_annotated_subclusters_general_", meta_data$sample_fullname[index]))
+# saveRDS(seurat_obj, file = paste0("03_processing/09_subset_annotation/data/", meta_data$sample_fullname[index], ".rds"))
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+names(new.cluster.ids_very_specific) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids_very_specific)
+seurat_obj[["very_specific_annotation_immune"]] <- Idents(seurat_obj)
+
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+names(new.cluster.ids_specific) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids_specific)
+seurat_obj[["specific_annotation_immune"]] <- Idents(seurat_obj)
+seurat_obj.markers <- find_marker(seurat_obj)
+print(general_umap(seurat_obj))
+print(general_features(seurat_obj))
+excel_sheet(seurat_obj.markers, output_dir = output_marker, name = paste0("02_annotated_subclusters_specific_", meta_data$sample_fullname[index]))
+
+saveRDS(seurat_obj, file = paste0("03_processing/09_subset_annotation/specific_data/specific_", meta_data$sample_fullname[index], ".rds"))
+```
+
+# Sample 8
+
+
+```{R Sample_8}
+index <- 8
+res <- "0.5"
+new.cluster.ids_general <- c("CD8_T-cells", "Bad-quality", "CD4_T-cells", "Myeloid", "Proliferating_T-cells", "Myeloid", "Tumour", "CD8_T-cells")
+new.cluster.ids_specific <- c("CD8_T-cells", "Bad-quality", "CD4_T-cells", "Microglia", "Proliferating_T-cells", "Myeloid", "Tumour", "CD8_T-cells")
+new.cluster.ids_very_specific <- c("CD8_T-cells_1", "Bad-quality_2", "CD4_T-cells_3", "Microglia_4", "Proliferating_T-cells_5", "Myeloid_6", "Tumour_7", "CD8_T-cells_8")
+
+seurat_obj <- processed_list[[index]]
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+names(new.cluster.ids_general) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids_general)
+seurat_obj[["general_annotation_immune"]] <- Idents(seurat_obj)
+seurat_obj.markers <- find_marker(seurat_obj)
+print(general_umap(seurat_obj))
+
+excel_sheet(seurat_obj.markers, output_dir = output_marker, name = paste0("01_annotated_subclusters_general_", meta_data$sample_fullname[index]))
+# saveRDS(seurat_obj, file = paste0("03_processing/09_subset_annotation/data/", meta_data$sample_fullname[index], ".rds"))
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+names(new.cluster.ids_very_specific) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids_very_specific)
+seurat_obj[["very_specific_annotation_immune"]] <- Idents(seurat_obj)
+
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+names(new.cluster.ids_specific) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids_specific)
+seurat_obj[["specific_annotation_immune"]] <- Idents(seurat_obj)
+seurat_obj.markers <- find_marker(seurat_obj)
+print(general_umap(seurat_obj))
+print(general_features(seurat_obj))
+excel_sheet(seurat_obj.markers, output_dir = output_marker, name = paste0("02_annotated_subclusters_specific_", meta_data$sample_fullname[index]))
+
+saveRDS(seurat_obj, file = paste0("03_processing/09_subset_annotation/specific_data/specific_", meta_data$sample_fullname[index], ".rds"))
+```
+
+```{R}
+sessionInfo()
+```
+
+
+
+```{R eval = FALSE}
+rmarkdown::render(
+    input = paste0("02_scripts/02_phase/04_naming_compartments.rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits",
+    output_file = paste0("04_naming_compartments.html")
+)
+```

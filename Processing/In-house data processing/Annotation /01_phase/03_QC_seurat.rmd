@@ -1,0 +1,229 @@
+
+---
+title: "Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 1
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/03_QC_seurat.rmd")
+```
+
+```{R loading data, echo = TRUE, message = FALSE}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+seurat_obj <- readRDS(here("03_processing/01_QC/data/merged_seurat_obj.RDS"))
+```
+```{R}
+nejm_colors <- paletteer::paletteer_d("ggsci::default_nejm", length(levels(as.factor(meta_data$sample_name))))
+primary_colors <- c("#66c2a5","#fc8d62","#8da0cb","#e78ac3")
+primary_colors_sample <- c("#66c2a5","#fc8d62","#fc8d62","#8da0cb","#e78ac3","#e78ac3","#e78ac3","#e78ac3")
+# Assign names to match the factor levels in Seurat object
+```
+
+
+```{R creating plots, include = FALSE}
+nejm_colors <- paletteer::paletteer_d("ggsci::default_nejm", length(levels(as.factor(meta_data$sample_name))))
+primary_colors <- c("#66c2a5","#fc8d62","#8da0cb","#e78ac3")
+# Assign names to match the factor levels in Seurat object
+names(nejm_colors) <- levels(meta_data$sample_name)
+
+qc_count_pre <- VlnPlot(seurat_obj,
+    features = c("nCount_RNA"), log = FALSE, group.by = "sample", cols = nejm_colors, pt.size = 0
+) + theme(axis.text.x = element_blank())
+qc_feature_pre <- VlnPlot(seurat_obj,
+    features = c("nFeature_RNA"), log = FALSE, group.by = "sample", cols = nejm_colors, pt.size = 0
+) + theme(axis.text.x = element_blank())
+qc_mt_pre <- VlnPlot(seurat_obj,
+    features = c("percent_mt"), log = FALSE, group.by = "sample", cols = nejm_colors, pt.size = 0
+) + theme(axis.text.x = element_blank())
+
+
+hist_count <- ggplot(data = FetchData(seurat_obj, vars = "nCount_RNA"), mapping = aes(x = log(nCount_RNA))) +
+    geom_histogram(bins = 100) +
+    labs(title = "Histogram of RNA count distribution in cells")
+hist_feat <- ggplot(data = FetchData(seurat_obj, vars = "nFeature_RNA"), mapping = aes(x = nFeature_RNA)) +
+    geom_histogram(bins = 100) +
+    labs(title = "Histogram of unique genes distribution in cells")
+hist_mt <- ggplot(data = FetchData(seurat_obj, vars = "percent_mt"), mapping = aes(x = log(percent_mt))) +
+    geom_histogram(bins = 100) +
+    labs(title = "Histogram of mitochondrial percentage distribution in cells")
+
+
+umi_v_mt <- FeatureScatter(seurat_obj,
+    feature1 = "nCount_RNA", feature2 = "percent_mt", group.by = "sample",
+    cols = nejm_colors, pt.size = 0.01
+)
+umi_v_genes <- FeatureScatter(seurat_obj,
+    feature1 = "nCount_RNA", feature2 = "nFeature_RNA", group.by = "sample",
+    cols = nejm_colors, pt.size = 0.01
+)
+```
+
+
+```{R plotting, fig.align="center", echo = FALSE,fig.width=10,fig.height=10, message  = FALSE}
+grid.arrange(hist_count, qc_count_pre,
+    hist_feat, qc_feature_pre,
+    hist_mt, qc_mt_pre,
+    umi_v_mt, umi_v_genes,
+    ncol = 2, nrow = 4
+)
+```
+
+
+
+```{R creating plots per primary, include = FALSE}
+nejm_colors <- paletteer::paletteer_d("ggsci::default_nejm", length(levels(as.factor(meta_data$sample_name))))
+
+# Assign names to match the factor levels in Seurat object
+names(nejm_colors) <- levels(meta_data$sample_name)
+
+
+qc_count_pre_log <- VlnPlot(seurat_obj,
+    features = c("nCount_RNA"), log = TRUE, group.by = "sample", cols = primary_colors,split.by = "primary", pt.size = 0
+) + theme(axis.text.x = element_blank())
+qc_feature_pre_log <- VlnPlot(seurat_obj,
+    features = c("nFeature_RNA"), log = TRUE, group.by = "sample", cols = primary_colors,split.by = "primary", pt.size = 0
+) + theme(axis.text.x = element_blank())
+qc_mt_pre_log <- VlnPlot(seurat_obj,
+    features = c("percent_mt"), log = TRUE, group.by = "sample", cols = primary_colors,split.by = "primary", pt.size = 0
+) #+ theme(axis.text.x = element_blank())
+
+qc_count_pre <- VlnPlot(seurat_obj,
+    features = c("nCount_RNA"), log = FALSE, group.by = "sample", cols = primary_colors,split.by = "primary", pt.size = 0
+) + theme(axis.text.x = element_blank())
+qc_feature_pre <- VlnPlot(seurat_obj,
+    features = c("nFeature_RNA"), log = FALSE, group.by = "sample", cols = primary_colors,split.by = "primary", pt.size = 0
+) + theme(axis.text.x = element_blank())
+qc_mt_pre <- VlnPlot(seurat_obj,
+    features = c("percent_mt"), log = FALSE, group.by = "sample", cols = primary_colors,split.by = "primary", pt.size = 0
+) #+ theme(axis.text.x = element_blank())
+
+ggsave(qc_count_pre,file = "03_processing/01_QC/qc_count_pre.png")
+ggsave(qc_feature_pre,file = "03_processing/01_QC/qc_feature_pre.png")
+ggsave(qc_mt_pre, file = "03_processing/01_QC/qc_mt_pre.png")
+```
+
+
+```{R plotting per primary, fig.align="center", echo = FALSE,fig.width=10,fig.height=10, message  = FALSE}
+grid.arrange( qc_count_pre,qc_count_pre_log,
+    qc_feature_pre,qc_feature_pre_log,
+    qc_mt_pre,qc_mt_pre_log,
+    ncol = 2, nrow =3
+)
+print(unique(seurat_obj$primary))
+
+```
+
+
+# Data subsetting
+
+
+```{R Paramaters, echo = TRUE}
+minUMI <- 200
+maxUMI <- 150000
+minfeat <- 200
+maxfeat <- 10000
+maxmt <- 20
+```
+
+```{R plotting lines, echo = FALSE, eval =F}
+qc_count_line <- VlnPlot(seurat_obj,
+    features = c("nCount_RNA"), group.by = "sample", cols = nejm_colors, pt.size = 0
+) + theme(axis.text.x = element_blank()) + geom_hline(yintercept = minUMI, color = "red") + geom_hline(yintercept = maxUMI, color = "red")
+qc_feature_line <- VlnPlot(seurat_obj,
+    features = c("nFeature_RNA"), group.by = "sample", cols = nejm_colors, pt.size = 0
+) + theme(axis.text.x = element_blank()) + geom_hline(yintercept = minfeat, color = "red") + geom_hline(yintercept = maxfeat, color = "red")
+qc_mt_line <- VlnPlot(seurat_obj,
+    features = c("percent_mt"), group.by = "sample", cols = nejm_colors, pt.size = 0
+) + theme(axis.text.x = element_blank()) + geom_hline(yintercept = maxmt, color = "red")
+
+
+hist_count_line <- ggplot(data = FetchData(seurat_obj, vars = "nCount_RNA"), mapping = aes(x = nCount_RNA)) +
+    geom_histogram() +
+    labs(title = "Histogram of RNA count distribution in cells") +
+    geom_vline(xintercept = minUMI, color = "red") +
+    geom_vline(xintercept = maxUMI, color = "red")
+hist_feat_line <- ggplot(data = FetchData(seurat_obj, vars = "nFeature_RNA"), mapping = aes(x = nFeature_RNA)) +
+    geom_histogram() +
+    labs(title = "Histogram of unique genes distribution in cells") +
+    geom_vline(xintercept = minfeat, color = "red") +
+    geom_vline(xintercept = maxfeat, color = "red")
+hist_mt_line <- ggplot(data = FetchData(seurat_obj, vars = "percent_mt"), mapping = aes(x = percent_mt)) +
+    geom_histogram() +
+    labs(title = "Histogram of mitochondrial percentage distribution in cells") +
+    geom_vline(xintercept = maxmt, color = "red")
+
+umi_v_mt_lines <- FeatureScatter(seurat_obj,
+    feature1 = "nCount_RNA", feature2 = "percent_mt", group.by = "sample",
+    cols = nejm_colors, pt.size = 0.01
+) + geom_hline(yintercept = maxmt, color = "red") +
+    geom_vline(xintercept = minUMI, color = "red") + geom_vline(xintercept = maxUMI, color = "red")
+
+
+umi_v_genes_lines <- FeatureScatter(seurat_obj,
+    feature1 = "nCount_RNA", feature2 = "nFeature_RNA", group.by = "sample",
+    cols = nejm_colors, pt.size = 0.01
+) +
+    geom_hline(yintercept = minfeat, color = "red") +
+    geom_hline(yintercept = maxfeat, color = "red") +
+    geom_vline(xintercept = minUMI, color = "red") +
+    geom_vline(xintercept = maxUMI, color = "red")
+```
+
+```{R plotting_2, fig.align="center", echo = FALSE,fig.width=10,fig.height=10, message  = FALSE, eval = F}
+grid.arrange(hist_count_line, qc_count_line,
+    hist_feat_line, qc_feature_line,
+    hist_mt_line, qc_mt_line,
+    umi_v_mt_lines, umi_v_genes_lines,
+    ncol = 2, nrow = 4
+)
+```
+
+```{R filtering, eval = F}
+total_cells <- dim(seurat_obj)[2]
+
+seurat_obj <- subset(
+    seurat_obj,
+    nCount_RNA > minUMI &
+        nCount_RNA < maxUMI &
+        nFeature_RNA > minfeat &
+        nFeature_RNA < maxfeat &
+        percent_mt < maxmt
+)
+subset_cells <- dim(seurat_obj)[2]
+data_removed <- 100 - ((subset_cells / total_cells) * 100)
+print(data_removed)
+```
+
+```{R rmd, eval = F}
+rmarkdown::render(
+    input = paste0("02_scripts/01_phase/03_QC_seurat.rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits",
+    output_file = paste0("03_CQC_seurat.html")
+)
+
+
+```

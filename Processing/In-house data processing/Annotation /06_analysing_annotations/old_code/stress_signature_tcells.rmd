@@ -1,0 +1,400 @@
+# Tomorrow,
+###  1. Check with Juan the markers of the objects to really confirm my findings.
+###  2. Overlap all of the previous annotations in the bigger objects.
+###  3. Compare the findings of annotation with the results in wetlab, do things correlate with the values found?
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+# install.packages("languageserver")
+```
+
+```{R general functions, eval =T}
+library(here)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+output_figs <- "03_processing/13_phase_6/figs/tcells_stress/"
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+source("02_scripts/04_integration/functions.R")
+source("02_scripts/06_analysing_annotations/utils.R")
+library(dittoSeq)
+library(UCell)
+
+```
+```{R saving object,eval = T}
+tseur <- readRDS( file = "03_processing/12_phase_5/data/Tcell_seurat_annotated.rds")
+reduction_name <- "Tcell"
+
+Idents(object = tseur) <- "RNA_snn_res.0.9"# Order is messed up, so the order of sizes does not correspond
+# new.cluster.ids <- c("Exhausted_CD8", "Tcells_CD8", "Bad-Quality", "Unknown", "Unknown", "Proliferative_1", "Tcells_CD4", "Tcells_Naive", "Tregs", "Tregs_2", "NKs")
+new.cluster.ids <- c("Exhausted_CD8", "Proliferating_CD8", "Tcells_CD8", "Unknown", "Unknown", "Proliferative_Tcells", "Tcells_CD4_Naive", "Unknown", "Tregs", "Tcells_CD4", "Tcells_CD4_proliferating","Tregs_2","NK")
+new.cluster.ids_2 <- c("Exhausted_CD8", "Proliferating_CD8", "Tcells_CD8", "Unknown_1", "Unknown_2", "Proliferative_Tcells", "Tcells_CD4_Naive", "Unknown_3", "Tregs", "Tcells_CD4", "Tcells_CD4_proliferating","Tregs_2","NK")
+names(new.cluster.ids_2) <- levels(tseur)
+tseur <- RenameIdents(tseur, new.cluster.ids_2 )
+tseur[["ann_lvl_2_Tcells_specific"]] <- Idents(tseur)
+Idents(object = tseur) <- "RNA_snn_res.0.9"
+names(new.cluster.ids) <- levels(tseur)
+tseur <- RenameIdents(tseur, new.cluster.ids)
+tseur[["ann_lvl_2_Tcells"]] <- Idents(tseur)
+DimPlot(tseur, reduction = paste0("umap.harmony.",reduction_name),pt.size = 0.1, label = T, group.by = "ann_lvl_1_filtered") & NoAxes()
+DimPlot(tseur, reduction = paste0("umap.harmony.",reduction_name),pt.size = 0.1, label = T, group.by = "ann_lvl_2_Tcells") & NoAxes()
+
+```
+
+
+```{R}
+colnames(tseur@meta.data)
+dittoDimPlot(tseur,var = "ann_lvl_2_Tcells_specific",do.label = T,reduction.use = paste0("umap.harmony.",reduction_name)) & NoAxes()
+
+gene_list <- list(
+    house_keeping_genes = c("ACTB", "BORCS7", "CHMP2A", "EMC7", "GPI", "PSMB2", "PSMB4", "RAB7A", "REEP5", "SNRPD3", "VCP", "VPS29"),
+    lowquality_genes = c("HBB", "HBA1", "HBA2", "HBD"),
+    HSP_genes = c("HSP90AA1", "HSP90AB1", "HSPA1A", "HSPA1B", "HSPA5", "HSPA6", "HSPA8", "HSPB1", "HSPD1", "HSPE1", "HSPH1"),
+    hypoxiaadaptation_genes = c("DDIT3", "XBP1", "DDIT4", "P4HB", # ER stress (Rashid et al, 2015)
+                             "ENO1", "HK2", "PGK1", "GAPDH","MYC", # glycolysis
+                             "PDK1", "PHF1", "SLC2A1" # hypoxia; https://pubmed.ncbi.nlm.nih.gov/32144406/
+                             ),
+                             Massonietal = Massonietal_up_genes_list,
+                             Baechleretal = Baechleretal_up_genes_list
+                             )
+
+
+
+```
+
+```{R adding gene list as a signature}
+adding_scores_2 <- function(seurat_obj, gene_list) {
+    for (index in 1:length(gene_list)) {
+        # print(list(toupper(gene_list[[names(gene_list)[index]]])))
+        # print(paste0(names(gene_list)[index], " sig"))
+        seurat_obj <- AddModuleScore(
+            object = seurat_obj,
+            features = list(toupper(gene_list[[names(gene_list)[index]]])),
+            ctrl = 5,
+            name = paste0(names(gene_list)[index], "_sig")
+        )
+    }
+    return(seurat_obj)
+}
+```
+```{R}
+library(ggpubr)
+Idents(object = tseur) <- "RNA_snn_res.0.9"
+
+tseur <- adding_scores_2(tseur,gene_list)
+
+colnames(tseur@meta.data)
+
+VlnPlot(
+  tseur,
+  features = gene_list$hypoxiaadaptation_genes,
+#   group.by = "library_name",
+#   cols = palette_color_factor, 
+  pt.size = 0, 
+  ncol = 6) &
+  theme(axis.text.x = element_text(angle = 0, hjust = 0.5, vjust = 0.5),
+        axis.text = element_text(size=18),
+        axis.title.x = element_blank(),
+        strip.text = element_text(size=20)) &
+  scale_y_continuous(expand = expansion(mult = c(0.1, 0.1))) & RotatedAxis()
+
+ggsave(paste0(output_figs,"hypoxiagenes_MYC.png"),width = 20, height = 20)
+
+
+VlnPlot(tseur, features = "house_keeping_genes sig1")
+dittoDimPlot(tseur,var = "house_keeping_genes_sig1",reduction.use = paste0("umap.harmony.",reduction_name)) + scale_color_gradientn(colors = c("black", "lightblue", "yellow"))
+dittoDimPlot(tseur,var = "lowquality_genes_sig1",reduction.use = paste0("umap.harmony.",reduction_name)) + scale_color_gradientn(colors = c("black", "lightblue", "yellow"))
+dittoDimPlot(tseur,var = "HSP_genes_sig1",reduction.use = paste0("umap.harmony.",reduction_name)) + scale_color_gradientn(colors = c("black", "lightblue", "yellow"))
+dittoDimPlot(tseur,var = "hypoxiaadaptation_genes_sig1",reduction.use = paste0("umap.harmony.",reduction_name)) + scale_color_gradientn(colors = c("black", "lightblue", "yellow"))
+
+```
+
+
+```{R published signatures}
+input_excels <- "03_processing/13_phase_6/data/tcell_stress/"
+storage_loc <- "signature_Baechleretal_storagetime_hPBMC_microarrays.csv"
+samplingtime_loc <- "signature_Massonietal_samplingtime_hPBMC.csv"
+
+storage <- paste0(input_excels,storage_loc)
+samplingtime <- paste0(input_excels,samplingtime_loc)
+Baechleretal__genes <- read_csv(storage)
+Massonietal__genes <- read_csv(samplingtime)
+
+
+Baechleretal__genes <- distinct(Baechleretal__genes)
+Baechleretal_up_genes <- Baechleretal__genes %>% 
+  filter(direction == "up-regulated") %>% 
+  dplyr::select(gene)
+
+Baechleretal_up_genes_list <- Baechleretal_up_genes$gene
+print(length(Baechleretal_up_genes_list))
+print(Baechleretal_up_genes_list)
+
+Massonietal_up_genes <- Massonietal__genes %>% 
+  filter(direction == "up-regulated") %>% 
+  dplyr::select(gene)
+
+Massonietal_up_genes_list <- Massonietal_up_genes$gene
+print(length(Massonietal_up_genes_list))
+print(Massonietal_up_genes_list)
+```
+
+```{R}
+DotPlot(tseur,
+        features = Baechleretal_up_genes_list,
+        group.by = "ann_lvl_2_Tcells_specific",
+        cols = "RdBu",
+        dot.scale = 5
+        ) +
+   theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+DotPlot(tseur,
+        features = gene_list$hypoxiaadaptation_genes,
+        group.by = "ann_lvl_2_Tcells_specific",
+        cols = "RdBu",
+        dot.scale = 5
+        ) +
+   theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+ggsave(paste0(output_figs,"hypoxia_dotplot.png"),width = 20, height = 20)
+
+# Storage
+dittoDimPlot(tseur,var = "Baechleretal_sig1",reduction.use = paste0("umap.harmony.",reduction_name)) + scale_color_gradientn(colors = c("black", "lightblue", "yellow"))
+ggsave(paste0(output_figs,"Storage.png"),width = 20, height = 20)
+
+
+VlnPlot(tseur, features = "Baechleretal_sig1")
+
+# Sampling time
+dittoDimPlot(tseur,var = "Massonietal_sig1",reduction.use = paste0("umap.harmony.",reduction_name)) + scale_color_gradientn(colors = c("black", "lightblue", "yellow"))
+ggsave(paste0(output_figs,"Sampling.png"),width = 20, height = 20)
+
+VlnPlot(tseur, features = "Massonietal_sig1")
+
+
+dittoDimPlot(tseur,var = "MYC",reduction.use = paste0("umap.harmony.",reduction_name)) + scale_color_gradientn(colors = c("black", "lightblue", "yellow"))
+ggsave(paste0(output_figs,"umap_myc.png"),width = 20, height = 20)
+
+```
+
+
+```{R}
+apoptosis <- list(apop = c("ADD1","AIFM3","ANKH","ANXA1","APP","ATF3","AVPR1A","BAX","BCAP31","BCL10","BCL2L1","BCL2L10","BCL2L11","BCL2L2","BGN","BID","BIK","BIRC3","BMF","BMP2","BNIP3L","BRCA1","BTG2","BTG3","CASP1","CASP2","CASP3","CASP4","CASP6","CASP7","CASP8","CASP9","CAV1","CCNA1","CCND1","CCND2","CD14","CD2","CD38","CD44","CD69","CDC25B","CDK2","CDKN1A","CDKN1B","CFLAR","CLU","CREBBP","CTH","CTNNB1","CYLD","DAP","DAP3","DCN","DDIT3","DFFA","DIABLO","DNAJA1","DNAJC3","DNM1L","DPYD","EBP","EGR3","EMP1","ENO2","ERBB2","ERBB3","EREG","ETF1","F2","F2R","FAS","FASLG","FDXR","FEZ1","GADD45A","GADD45B","GCH1","GNA15","GPX1","GPX3","GPX4","GSN","GSR","GSTM1","GUCY2D","H1-0","HGF","HMGB2","HMOX1","HSPB1","IER3","IFITM3","IFNB1","IFNGR1","IGF2R","IGFBP6","IL18","IL1A","IL1B","IL6","IRF1","ISG20","JUN","KRT18","LEF1","LGALS3","LMNA","PLPPR4","LUM","MADD","MCL1","MGMT","MMP2","NEDD9","NEFH","PAK1","PDCD4","PDGFRB","PEA15","PLAT","PLCB2","PMAIP1","PPP2R5B","PPP3R1","PPT1","PRF1","PSEN1","PSEN2","PTK2","RARA","RELA","RETSAT","RHOB","RHOT2","RNASEL","ROCK1","SAT1","SATB1","SC5D","SLC20A1","SMAD7","SOD1","SOD2","SPTAN1","SQSTM1","TAP1","TGFB2","TGFBR3","TIMP1","TIMP2","TIMP3","TNF","TNFRSF12A","TNFSF10","TOP2A","TSPO","TXNIP","VDAC2","WEE1","XIAP"))
+tseur <- adding_scores_2(tseur,apoptosis)
+
+dittoDimPlot(tseur,var = "apop_sig1",reduction.use = paste0("umap.harmony.",reduction_name)) + scale_color_gradientn(colors = c("black", "lightblue", "yellow"))
+ggsave(paste0(output_figs,"umap_apop.png"),width = 20, height = 20)
+
+VlnPlot(tseur, features = "apop_sig1")
+ggsave(paste0(output_figs,"vln_sig_apop.png"),width = 20, height = 20)
+VlnPlot(tseur, features = "IL7R")
+ggsave(paste0(output_figs,"vln_il7r.png"),width = 20, height = 20)
+VlnPlot(tseur, features = c("CD8A","CD8B","CD4","CD3E","CD3D"), ncol = 2)
+ggsave(paste0(output_figs,"vln_CD8-4.png"),width = 20, height = 20)
+
+VlnPlot(tseur, features = c("TRAV1-2","TRAJ33","TRAJ20","TRAJ12","TRBV20","TRBV6","TRAV10","TRAJ18","TRBV25-1"), ncol = 3)
+ggsave(paste0(output_figs,"mait-NKT.png"),width = 20, height = 20)
+
+VlnPlot(tseur, features = c("TRGC1","TRDC"), ncol = 1)
+```
+
+```{R }
+# detect what is proliferating, combine the two clusters that are proliferating (2 and 6)
+
+VlnPlot(tseur, features = c("KLRB1", "SLC4A10", "ZBTB16", "IL23R", "IL18R1", "CEPBD", "CCR6", "DPP4"
+), ncol = 4)
+ggsave(paste0(output_figs,"gammadelta.png"),width = 20, height = 20)
+dittoDimPlot(tseur,var = c("NCAM1","KLRF1"),reduction.use = paste0("umap.harmony.",reduction_name)) + scale_color_gradientn(colors = c("black", "yellow"))
+ggsave(paste0(output_figs,"mait_cells_umap.png"),width = 20, height = 20)
+
+DimPlot(tseur, features = c("NCAM1","KLRF1"),reduction= paste0("umap.harmony.",reduction_name) )
+
+FeaturePlot(tseur, reduction = paste0("umap.harmony.",reduction_name),pt.size = 0.1, features = c("NCAM1","KLRB1")) & NoAxes()
+ggsave(paste0(output_figs,"mait_cells_umaps.png"),width = 20, height = 20)
+
+
+
+```
+
+```{R new marker lists}
+
+differentiation <- c("CCR7","CD27","CX3CR1","IL7R","KLRG1","SELL")
+cytotoxicity <- c("GNLY","GZMA","GZMB","GZMK","NKG7","PRF1")
+diff_repressing_TF <- c("CD4","CD8A","CD8B","TCF7","ID3","LEF1","BACH2","ZEB1","FOXO1")
+diff_inducing_TF <- c("ZEB2","EOMES","TBX21","ID2","PRDM1")
+
+FeaturePlot(tseur, reduction = paste0("umap.harmony.",reduction_name),pt.size = 0.1, features = differentiation,order= TRUE) & NoAxes()
+ggsave(paste0(output_figs,"differentiation_umap.png"),width = 20, height = 20)
+
+
+FeaturePlot(tseur, reduction = paste0("umap.harmony.",reduction_name),pt.size = 0.1, features = cytotoxicity,order= TRUE) & NoAxes()
+ggsave(paste0(output_figs,"cytotoxicity_umap.png"),width = 20, height = 20)
+
+FeaturePlot(tseur, reduction = paste0("umap.harmony.",reduction_name),pt.size = 0.1, features = diff_repressing_TF,order= TRUE) & NoAxes()
+ggsave(paste0(output_figs,"diff_repressing_TF_umap.png"),width = 20, height = 20)
+
+FeaturePlot(tseur, reduction = paste0("umap.harmony.",reduction_name),pt.size = 0.1, features = diff_inducing_TF,order= TRUE) & NoAxes()
+ggsave(paste0(output_figs,"diff_inducing_TF_umap.png"),width = 20, height = 20)
+
+specific <- c("PTPRC","IL7R", # CD127
+"CCR7","SELL","TCF7","LEF1","BACH2","IL2RB",# Il2rb is CD122
+"CXCR3", "FAS", # CD95
+"CX3CR1"
+)
+FeaturePlot(tseur, reduction = paste0("umap.harmony.",reduction_name),pt.size = 0.1, features = specific,order= TRUE) & NoAxes()
+ggsave(paste0(output_figs,"specific.png"),width = 30, height = 20)
+Idents(tseur) %>% unique()
+VlnPlot(tseur, features = specific, ncol = 2)
+ggsave(paste0(output_figs,"specific_vln.png"),width = 25, height = 25)
+VlnPlot(tseur, features = "CXCL13")
+ggsave(paste0(output_figs,"Cxcl13_vln.png"),width = 10, height = 10)
+p <- FeaturePlot(tseur, reduction = paste0("umap.harmony.",reduction_name),pt.size = 0.1, features = "CXCL13",order= TRUE, split.by = "primary_sample", ncol = 2, combine = F) & NoAxes()
+
+
+plots <- FeaturePlot(
+  tseur, 
+  reduction = paste0("umap.harmony.", reduction_name),
+  pt.size = 0.1, 
+  features = "CXCL13", 
+  order = TRUE, 
+  split.by = "primary_sample", 
+  combine = FALSE
+)
+
+# Apply NoAxes to each plot
+plots <- lapply(plots, function(x) x + NoAxes())
+
+# Combine manually with patchwork or cowplot
+library(patchwork)
+combined_plot <- wrap_plots(plots, ncol = 2)
+
+combined_plot
+
+plot_grid(plotlist = p, ncol=4)
+ggsave(paste0(output_figs,"cxcl13_umap.png"),width = 20, height = 20)
+
+```
+
+
+```{R}
+tseur@meta.data$ann_lvl_2_Tcells_specific %>% levels()
+table(tseur@meta.data$RNA_snn_res.0.05)
+
+
+Idents(tseur) <- "RNA_snn_res.0.05"
+
+marker_list <- FindMarkers(
+    object = tseur,
+    ident.1 = "1", ident.2 = "2",
+    only.pos = F,
+    min.pct = 0.25,
+    logfc.threshold = 0.25
+)
+
+```
+
+
+```{R}
+volcano_plotting <- function(marker_list, ident.1 = "", ident.2 = "") {
+    marker_list$genes <- row.names(marker_list)
+    marker_list$diffexpressed <- "NO"
+    marker_list$diffexpressed[marker_list$avg_log2FC > 1.5 & marker_list$p_val_adj < 0.05] <- "UP"
+    marker_list$diffexpressed[marker_list$avg_log2FC < -1.5 & marker_list$p_val_adj < 0.05] <- "DOWN"
+    marker_list$diffexpressed[marker_list$avg_log2FC > 1.5 & marker_list$p_val_adj < 0.05] <- "UP"
+    marker_list$diffexpressed[marker_list$avg_log2FC < -1.5 & marker_list$p_val_adj < 0.05] <- "DOWN"
+    # marker_list$delabel <- NA
+    # marker_list$delabel[marker_list$diffexpressed != "NO"] <- row.names(marker_list)[marker_list$diffexpressed != "NO"]
+
+    marker_list$delabel <- NA
+    marker_list$delabel[marker_list$diffexpressed != "NO"] <- row.names(marker_list)[marker_list$diffexpressed != "NO"]
+    marker_list %>%
+        arrange(desc(avg_log2FC)) %>%
+        dplyr::select(avg_log2FC) %>%
+        head(, n = 10) %>%
+        row.names() -> labels_1
+    marker_list %>%
+        arrange(avg_log2FC) %>%
+        dplyr::select(avg_log2FC) %>%
+        head(, n = 10) %>%
+        row.names() -> labels_2
+    labels <- c(labels_1, labels_2)
+    marker_list$delabel <- NA
+    marker_list$delabel[marker_list$genes %in% labels] <- marker_list$genes[marker_list$genes %in% labels]
+    min_above <- min(marker_list$p_val_adj[marker_list$p_val_adj > 0])
+    marker_list$p_val_adj <- ifelse(marker_list$p_val_adj == 0, min_above, marker_list$p_val_adj)
+    volcano_plot <- ggplot(data = marker_list, aes(x = avg_log2FC, y = -log10(p_val_adj), col = diffexpressed, label = delabel)) +
+        geom_point() +
+        geom_text_repel(max.overlaps = Inf) +
+        scale_color_manual(values = c("blue", "black", "red")) +
+        geom_vline(xintercept = c(-1.5, 1.5), col = "red") +
+        geom_hline(yintercept = -log10(0.05), col = "red") & labs(title = paste0("Comparing: ", ident.1, " versus the ", ident.2))
+    return(volcano_plot)
+}
+
+volcano_plot <- volcano_plotting(marker_list, ident.1 = "Known", ident.2 = "Unknown")
+volcano_plot
+ggsave(paste0(output_figs,"volcano.png"),width = 25, height = 25)
+
+head(marker_list)
+
+marker_list %>%
+    arrange(desc(avg_log2FC)) %>% head() 
+
+```
+
+
+```{R}
+oxphos_genes <- list(oxphos = c(
+  "ABCB7","ACAA1","ACAA2","ACADM","ACADSB","ACADVL","ACAT1","ACO2","AFG3L2","AIFM1",
+  "ALAS1","ALDH6A1","ATP1B1","ATP5F1A","ATP5F1B","ATP5F1C","ATP5F1D","ATP5F1E",
+  "ATP5PB","ATP5MC1","ATP5MC2","ATP5MC3","ATP5PD","ATP5ME","ATP5PF","ATP5MF",
+  "ATP5MG","ATP5PO","ATP6AP1","ATP6V0B","ATP6V0C","ATP6V0E1","ATP6V1C1","ATP6V1D",
+  "ATP6V1E1","ATP6V1F","ATP6V1G1","ATP6V1H","BAX","BCKDHA","BDH2","MPC1","CASP7",
+  "COX10","COX11","COX15","COX17","COX4I1","COX5A","COX5B","COX6A1","COX6B1",
+  "COX6C","COX7A2","COX7A2L","COX7B","COX7C","COX8A","CPT1A","CS","CYB5A","CYB5R3",
+  "CYC1","CYCS","DECR1","DLAT","DLD","DLST","ECH1","ECHS1","ECI1","ETFA","ETFB",
+  "ETFDH","FDX1","FH","FXN","GLUD1","GOT2","GPI","GPX4","GRPEL1","HADHA","HADHB",
+  "HCCS","HSD17B10","HSPA9","HTRA2","IDH1","IDH2","IDH3A","IDH3B","IDH3G","IMMT",
+  "ISCA1","ISCU","LDHA","LDHB","LRPPRC","MAOB","MDH1","MDH2","MFN2","MGST3",
+  "MRPL11","MRPL15","MRPL34","MRPL35","MRPS11","MRPS12","MRPS15","MRPS22","MRPS30",
+  "MTRF1","MTRR","MTX2","NDUFA1","NDUFA2","NDUFA3","NDUFA4","NDUFA5","NDUFA6",
+  "NDUFA7","NDUFA8","NDUFA9","NDUFAB1","NDUFB1","NDUFB2","NDUFB3","NDUFB4","NDUFB5",
+  "NDUFB6","NDUFB7","NDUFB8","NDUFC1","NDUFC2","NDUFS1","NDUFS2","NDUFS3","NDUFS4",
+  "NDUFS6","NDUFS7","NDUFS8","NDUFV1","NDUFV2","NNT","NQO2","OAT","OGDH","OPA1",
+  "OXA1L","PDHA1","PDHB","PDHX","PDK4","PDP1","PHB2","PHYH","PMPCA","POLR2F","POR",
+  "PRDX3","RETSAT","RHOT1","RHOT2","SDHA","SDHB","SDHC","SDHD","SLC25A11","SLC25A12",
+  "SLC25A20","SLC25A3","SLC25A4","SLC25A5","SLC25A6","SUCLA2","SUCLG1","SUPV3L1",
+  "SURF1","TCIRG1","TIMM10","TIMM13","TIMM17A","TIMM50","TIMM8B","TIMM9","TOMM22",
+  "TOMM70","UQCR10","UQCR11","UQCRB","UQCRC1","UQCRC2","UQCRFS1","UQCRH","UQCRQ",
+  "VDAC1","VDAC2","VDAC3"
+))
+tseur@meta.data %>% colnames()
+tseur <- adding_scores_2(tseur,oxphos_genes)
+VlnPlot(tseur, features = "oxphos_sig1")
+FeaturePlot(tseur, reduction = paste0("umap.harmony.",reduction_name),pt.size = 0.1, features = "oxphos_sig1",order= TRUE) & NoAxes()
+
+
+data_senes <- read.csv(paste0(input_excels,"Universal_human.txt"), header = FALSE)
+
+tseur <- adding_scores_2(tseur,list(senes = data_senes$V1))
+FeaturePlot(tseur, reduction = paste0("umap.harmony.",reduction_name),pt.size = 0.1, features = "senes_sig1",order= TRUE) & NoAxes()
+ggsave(paste0(output_figs,"senes)umap.png"),width = 10, height = 10)
+
+VlnPlot(tseur, features = "senes_sig1")
+ggsave(paste0(output_figs,"senes_vln.png"),width = 10, height = 10)
+
+
+head(data_senes)
+```

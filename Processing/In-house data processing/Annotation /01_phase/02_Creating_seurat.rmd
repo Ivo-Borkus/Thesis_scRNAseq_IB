@@ -1,0 +1,95 @@
+
+---
+title: "Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 1
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+# here::i_am("02_scripts/QC_seurat.rmd")
+```
+
+
+
+```{R}
+primary <- c("CUP","Colon","Colon","Lung","Melanoma","Melanoma","Melanoma","Melanoma")
+
+print(primary[1])
+```
+# Seurat Objects
+```{R creating seurat objectm, eval = T, echo = FALSE}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+sample_ids <- meta_data$sample_name
+primary <- c("CUP","Colon","Colon","Lung","Melanoma","Melanoma","Melanoma","Melanoma")
+sample_primary <- c("CUP","Colon_1","Colon_2","Lung","Melanoma_1_sorted","Melanoma_2_sorted","Melanoma_2_unsorted","Melanoma_3_unsorted")
+
+
+seurat_obj_list <- map(sample_ids, function(id) {
+    index <- match(id, sample_ids)
+    data_dir <- here("01_data", meta_data$sample_fullname[index], id, "outs/per_sample_outs", id, "count/sample_filtered_feature_bc_matrix")
+    print(data_dir)
+    count_data <- Read10X(data.dir = data_dir)
+    seurat_obj <- CreateSeuratObject(count_data)
+    seurat_obj$sample <- id
+    seurat_obj$primary <- primary[index]
+    seurat_obj$sample_primary <- sample_primary[index]
+    seurat_obj[["percent_mt"]] <- PercentageFeatureSet(seurat_obj, pattern = "^MT-")
+    seurat_obj
+})
+
+
+
+for (i in 1:length(seurat_obj_list)) {
+    print(paste("number of cells in sample", i, ": ", ncol(seurat_obj_list[[i]])))
+    print(paste("number of features in sample", i, ": ", nrow(seurat_obj_list[[i]])))
+}
+
+names(seurat_obj_list) <- sample_ids
+seurat_obj <- merge(seurat_obj_list[[1]],
+    y = seurat_obj_list[2:length(seurat_obj_list)],
+    add.cell.ids = sample_ids
+)
+# seurat_obj <- JoinLayers(seurat_obj)
+print(unique(seurat_obj$primary))
+# For reference, check: https://github.com/satijalab/seurat/issues/480
+```
+
+
+```{R saving object 01_QC, include = FALSE, eval = T}
+saveRDS(seurat_obj_list, here("03_processing/01_QC/data/seperate_objects.RDS"))
+saveRDS(seurat_obj, here("03_processing/01_QC/data/merged_seurat_obj.RDS"))
+```
+
+```{R rmd run, eval = F}
+rmarkdown::render(
+    input = paste0("02_scripts/01_phase/02_Creating_seurat.rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits",
+    output_file = paste0("02_Creating_seurat.html")
+)
+
+
+
+```

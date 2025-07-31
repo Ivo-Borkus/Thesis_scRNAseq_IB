@@ -1,0 +1,159 @@
+
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Analysis of singlecellRNAseq sample_all')`"
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+```{R loading libraries}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+library(DoubletFinder)
+library(clustree)
+library(knitr)
+library(rscrublet)
+library(Matrix)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/old_scripts/pia_images.rmd")
+```
+
+```{R creating DF, eval = F}
+# Aggregate the data by Sample
+
+
+# Lymphoid_fraction == t-cell: 1148
+# write.csv(cluster_df, file = paste0(here(), "/", "03_processing/07_Subclustering/data/subsets/lineage/Counts_per_clust/counts_df_", sample, ".csv"))
+# lymphoid_fraction <- cluster_df[cluster_df$Cluster == "Lymphoid", 2] / sum(cluster_df$Cell_Count)
+# print(paste0(round(lymphoid_fraction * 100, 2), "%"))
+
+# hi <- lapply(list.files("03_processing/07_Subclustering/data/subsets/lineage/rds/", full.names = TRUE), function(files) {
+#     print(basename(files))
+#     print(files)
+#     sample <- sub("\\..*", "", basename(files))
+#     seurat_obj <- readRDS(files)
+#     cluster_counts <- table(Idents(seurat_obj))
+#     cluster_df <- as.data.frame(cluster_counts)
+#     colnames(cluster_df) <- c("Cluster", "Cell_Count")
+#     cluster_df$sample <- sample
+# })
+nejm_colors <- paletteer::paletteer_d(
+    "ggsci::default_nejm", length(levels(as.factor(list.files("03_processing/07_Subclustering/data/subsets/lineage/rds", full.names = TRUE))))
+)
+primary_colors <- c("#66c2a5","#fc8d62","#8da0cb","#e78ac3")
+primary_colors_sample <- c("#66c2a5","#fc8d62","#fc8d62","#8da0cb","#e78ac3","#e78ac3","#e78ac3","#e78ac3")
+primary <- c("CUP","Colon","Colon","Lung","Melanoma","Melanoma","Melanoma","Melanoma")
+sample_primary <- c("CUP","Colon_1","Colon_2","Lung","Melanoma_1_sorted","Melanoma_2_sorted","Melanoma_2_unsorted","Melanoma_3_unsorted")
+
+df <- data.frame()
+i <- 0
+for (files in list.files("03_processing/07_Subclustering/data/subsets/lineage/rds", full.names = TRUE)) {
+    i <- i + 1
+    print(basename(files))
+    print(files)
+    sample <- sub("\\..*", "", basename(files))
+    seurat_obj <- readRDS(files)
+    # seurat_obj$primary <- primary[i]
+    cluster_counts <- table(Idents(seurat_obj))
+    cluster_df <- as.data.frame(cluster_counts)
+    colnames(cluster_df) <- c("Cluster", "Cell_Count")
+    cluster_df$sample <- sample_primary[i]
+    cluster_df$primary <- primary[i]
+    df <- rbind(df, cluster_df)
+}
+
+write.csv(df, file = "important_csv.csv")
+
+```
+
+```{R working on the DF}
+df <- read_csv(file ="important_csv.csv")
+df %>%
+    group_by(sample, Cluster) %>%
+    summarise(n = sum(Cell_Count), .groups = "drop") %>%
+    group_by(sample) %>%
+    mutate(pct = (n / sum(n)) * 100) -> pct_df
+write.csv(pct_df, file = "important_pct.csv")
+
+# df$cluster_grouped <- c("Other", "Lymphoid", "immune_other", "Lymphoid", "Lymphoid", "immune_other", "Lymphoid", "Other", "Other", "Lymphoid", "Other", "immune_other", "immune_other", "")
+
+ggplot(data = pct_df, aes(x = sample, y = pct, fill = Cluster)) +
+    geom_bar(stat = "identity") +
+    # facet_wrap(~primary)+
+    theme(axis.text.x = element_text(angle = -90, hjust = 0))
+```
+
+
+```{R old code, eval = FALSE}
+#######
+
+aggregated <- df %>%
+    group_by(Sample) %>%
+    summarise(
+        Proportion_immune = mean(Proportion_immune),
+        Proportion_lymphoid = mean(Proportion_lymphoid)
+    )
+
+aggregated$Other_cells <- 1 - aggregated$Proportion_immune
+
+
+new <- aggregated %>%
+    pivot_longer(c("Other_cells", "Proportion_immune"), names_to = "type")
+
+plot_1 <- ggplot(data = new, aes(y = Sample, x = value, fill = type)) +
+    geom_col() +
+    scale_fill_manual(values = c("Other_cells" = "#BC3C29FF", "Proportion_immune" = "#0072B5FF")) + # Add specific colors here
+    scale_x_continuous(labels = scales::percent_format(scale = 1)) +
+    # theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+    labs(title = "Proportion of immune cells (CD45+) in different samples") +
+    theme_minimal()
+
+
+ggsave(plot_1, filename = here("02_scripts/pia_plot_1.pdf"), width = 8, height = 8)
+
+aggregated$Other_cells <- 1 - aggregated$Proportion_lymphoid
+
+new <- aggregated %>%
+    pivot_longer(c("Other_cells", "Proportion_lymphoid"), names_to = "type")
+
+plot_2 <- ggplot(data = new, aes(y = Sample, x = value, fill = type)) +
+    geom_col() +
+    scale_fill_manual(values = c("Other_cells" = "#BC3C29FF", "Proportion_lymphoid" = "#0072B5FF")) + # Add specific colors here
+    scale_x_continuous(labels = scales::percent_format(scale = 1)) +
+    # theme(axis.text. = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+    labs(title = "Proportion of lymphoid annotated cells in different samples") +
+    theme_minimal()
+
+
+ggsave(plot_2, filename = here("02_scripts/pia_plot_2.pdf"), width = 8, height = 8)
+```
+
+```{R, echo = FALSE, eval = FALSE}
+rmarkdown::render(
+    input = paste0("02_scripts/01_phase/old_scripts/pia_images.rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits/",
+    output_file = paste0("pia_images.html")
+)
+# "rmarkdown::render(input = paste0("02_scripts/lineage_annotation/Single.rmd"),output_format = "html_document",output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits/lineage_annotation",params = list(sample = "105946-002-005",fullname = "Mel",minUMI = 500,maxUMI = NA,minfeat = 300,maxfeat = 10000,maxmt = 20,res = "0.01",load = FALSE,new = TRUE), output_file = paste0("sample_105946-002-005_lineages.html"))"
+```

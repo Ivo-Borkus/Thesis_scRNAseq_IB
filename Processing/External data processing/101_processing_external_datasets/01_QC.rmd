@@ -1,0 +1,217 @@
+---
+title: "Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 1
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+# Loading packages
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(ggrepel)
+# library(paletteer)
+library(gridExtra)
+# install.packages("rscrublet")
+# remotes::install_github("iaaaka/Rscrublet")
+library(rscrublet)
+
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+# here::i_am("02_scripts/QC_sequencing.rmd")
+
+source("02_scripts/101_processing_external_datasets/qc_functions.R")
+```
+
+# Loading data
+```{R loading data}
+seurat_biermann <- readRDS("03_processing/100_external_datasets/data/seurat_biermann_initial_meta.rds")
+seurat_gonzalez <- readRDS("03_processing/100_external_datasets/data/seurat_gonzalez_initial_meta.rds")
+seurat_lee <- readRDS("03_processing/100_external_datasets/data/seurat_lee_initial_meta.rds")
+```
+
+```{R creating combined lists}
+# Checking out QC metrics.
+# To do, make a metadata that contains all samples??
+list_of_seurats <- list(
+    Biermann = seurat_biermann,
+    Gonzalez = seurat_gonzalez,
+    Lee = seurat_lee
+)
+list_of_seurats <- list(
+    Biermann = scrublet(seurat_biermann),
+    Gonzalez = scrublet(seurat_gonzalez),
+    Lee = scrublet(seurat_lee)
+)
+# seurat_obj <- scrublet(seurat_obj)
+```
+
+# Making metadata
+
+```{R cell count, fig.height = 10}
+seurat_biermann@meta.data$ID %>% unique()
+seurat_gonzalez@meta.data$sample_names %>% unique()
+seurat_lee@meta.data$Sample %>% unique()
+
+seurat_biermann@meta.data$ID %>% table()
+seurat_gonzalez@meta.data$sample_names %>% table()
+seurat_lee@meta.data$Sample %>% table()
+
+
+meta_data_external <- data.frame(
+    datasets = c(
+        rep("Biermann", length(c(unique(seurat_biermann@meta.data$ID)))),
+        rep("Gonzalez", length(unique(seurat_gonzalez@meta.data$sample_names))),
+        rep("Lee", length(unique(seurat_lee@meta.data$Sample)))
+    ),
+    samples = c(
+        unique(seurat_biermann@meta.data$ID),
+        unique(seurat_gonzalez@meta.data$sample_names),
+        unique(seurat_lee@meta.data$Sample)
+    ),
+    Cells = as.vector(c(
+        table(seurat_biermann@meta.data$ID),
+        table(seurat_gonzalez@meta.data$sample_names),
+        table(seurat_lee@meta.data$Sample)
+    ))
+)
+as.factor(meta_data_external$datasets)
+as.factor(meta_data_external$samples)
+
+level_order <- c(meta_data_external$samples)
+level_order_datasets <- unique(c(meta_data_external$datasets))
+
+meta_data_external$samples <- factor(meta_data_external$samples, levels = level_order)
+meta_data_external$datasets <- factor(meta_data_external$datasets, levels = level_order_datasets)
+
+cell_count <- ggplot(
+    data = meta_data_external,
+    mapping = aes(x = samples, y = Cells, fill = datasets)
+) +
+    geom_col() +
+    # scale_fill_manual(values = c("highlight" = nejm_colors[index], "default" = "grey")) + # Custom colors
+
+    labs(
+        title = "Cell count per sample",
+        x = "Sample name",
+        y = "Number of cells detected"
+    ) +
+    theme(
+        axis.title.x = element_text(),
+        axis.title.y = element_text(),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none",
+        axis.title = element_text()
+    ) +
+    geom_text(aes(label = Cells), vjust = -1.5)
+cell_count
+output_figs <- "03_processing/101_processing_exernal/figs/"
+ggsave(paste0(output_figs, "cell_count_persample.png"))
+
+write.csv(meta_data_external, "03_processing/101_processing_exernal/meta_data.csv")
+```
+
+```{R empty}
+# biermann_seurat_list <- SplitObject(JoinLayers(seurat_biermann), split.by = "ID")
+# gonzalez_seurat_list <- SplitObject(JoinLayers(seurat_gonzalez), split.by = "sample_names")
+# lee_seurat_list <- SplitObject(JoinLayers(seurat_lee), split.by = "Sample")
+
+# Extracting seurat objects from their merged objects.
+```
+
+# Making plots
+
+## Violin
+```{R qc_plots,  fig.width = 20, fig.height = 20}
+list_of_seurats[[1]]@meta.data$percent_mt <- list_of_seurats[[1]]@meta.data$percent.mt
+sample_list <- list(
+    Biermann = "ID",
+    Gonzalez = "sample_names",
+    Lee = "Sample"
+)
+dataset_colors <- c(
+    Biermann = "#E41A1C", # Red
+    Gonzalez = "#377EB8", # Blue
+    Lee = "#4DAF4A" # Green
+)
+color_vector <- dataset_colors[as.character(meta_data_external$datasets)]
+qc_plots <- lapply(names(list_of_seurats), function(seurat) {
+    name <- seurat
+    seurat <- list_of_seurats[[seurat]]
+    filters <- filters_seurat(seurat_obj = seurat)
+    minUMI <- filters[[1]]
+    maxUMI <- filters[[2]]
+    minfeat <- filters[[3]]
+    maxfeat <- filters[[4]]
+    maxmt <- filters[[5]]
+    print(minUMI)
+    print(maxUMI)
+    print(minfeat)
+    print(maxfeat)
+    print(maxmt)
+    sample_col <- sample_list[[name]]
+    number_of_samples <- length(unique(seurat@meta.data[[sample_col]]))
+    grob_plot <- QC_plot(seurat_obj = seurat, sample_col = sample_col, n_samp = number_of_samples, name = name, minUMI, maxUMI, minfeat, maxfeat, maxmt)
+    # grob_plot_2 <- umi_plot(seurat_obj = seurat, sample_col = sample_col, n_samp = number_of_samples, name = name,minUMI, maxUMI, minfeat, maxfeat, maxmt)
+})
+
+grid.arrange(qc_plots[[1]]) # seurat_biermann
+grid.arrange(qc_plots[[2]]) # seurat_gonzalez
+grid.arrange(qc_plots[[3]]) # seurat_lee
+```
+
+## scatter
+```{R scatter plots, fig.width = 20, fig.height = 20}
+list_of_seurats[[1]]@meta.data$percent_mt <- list_of_seurats[[1]]@meta.data$percent.mt
+
+scatter_plots_qc <- lapply(names(list_of_seurats), function(seurat) {
+    name <- seurat
+    seurat <- list_of_seurats[[seurat]]
+    filters <- filters_seurat(seurat_obj = seurat)
+    minUMI <- filters[[1]]
+    maxUMI <- filters[[2]]
+    minfeat <- filters[[3]]
+    maxfeat <- filters[[4]]
+    maxmt <- filters[[5]]
+    sample_col <- sample_list[[name]]
+    number_of_samples <- length(unique(seurat@meta.data[[sample_col]]))
+    print(minUMI)
+    print(maxUMI)
+    print(minfeat)
+    print(maxfeat)
+    print(maxmt)
+    # grob_plot <- QC_plot(seurat_obj = seurat, sample_col = sample_col, n_samp = number_of_samples, name = name,minUMI, maxUMI, minfeat, maxfeat, maxmt)
+    grob_plot_2 <- umi_plot(seurat_obj = seurat, sample_col = sample_col, n_samp = number_of_samples, name = name, minUMI, maxUMI, minfeat, maxfeat, maxmt)
+})
+
+grid.arrange(scatter_plots_qc[[1]]) # seurat_biermann
+grid.arrange(scatter_plots_qc[[2]]) # seurat_gonzalez
+grid.arrange(scatter_plots_qc[[3]]) # seurat_lee
+```
+
+```{R sessioninfo}
+sessionInfo()
+```
+
+```{R eval = FALSE}
+Sys.setenv(PATH = paste("~/miniconda3/envs/brainR442/bin", Sys.getenv("PATH"), sep = ":"))
+rmarkdown::render(
+    input = paste0("02_scripts/101_processing_external_datasets/QC.rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits",
+    output_file = paste0("QC.html")
+)
+```

@@ -1,0 +1,254 @@
+# Tomorrow,
+###  1. Check with Juan the markers of the objects to really confirm my findings.
+###  2. Overlap all of the previous annotations in the bigger objects.
+###  3. Compare the findings of annotation with the results in wetlab, do things correlate with the values found?
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+# install.packages("languageserver")
+```
+
+```{R general functions, eval =T}
+library(here)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+output_figs <- "03_processing/13_phase_6/figs/"
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+source("02_scripts/04_integration/functions.R")
+source("02_scripts/06_analysing_annotations/utils.R")
+
+```
+```{R saving object,eval = T}
+seurat_obj <- readRDS(file ="03_processing/12_phase_5/data/integrated_immune_annotated_lvl2.rds")
+```
+
+
+```{R make plots with dittoseq}
+library(dittoSeq)
+library(pals)
+reduction_name <- "immune_no_doub"
+dittoDimPlot(seurat_obj,var = "ann_lvl_2",do.label = T,reduction.use = paste0("umap.harmony.",reduction_name)) & NoAxes()
+ggsave(paste0(output_figs,"annotation_lvl_2_umap.png"))
+
+dittoBarPlot(seurat_obj, "ann_lvl_2", group.by = "sample")
+# ggsave(paste0(output_figs,"barplot_lvl1.png"))
+
+
+```
+
+```{R comparing different groups}
+unique(seurat_obj@meta.data$ann_lvl_2)
+celltypes <- c("Exhausted_CD8","Tcells_CD8","Proliferating_CD8","Proliferative_Tcells","Tcells_CD4_Naive","Tcells_CD4","Tcells_CD4_proliferating","tregs","Tregs_2","NK","Unknown")
+seurat_obj@meta.data <- seurat_obj@meta.data %>%
+    mutate(cells_of_interest = case_when(
+        ann_lvl_2 %in% celltypes ~ TRUE,
+        TRUE ~ FALSE
+    ))
+
+cells_to_keep <- subset(x = seurat_obj, subset = cells_of_interest == "TRUE")
+table(seurat_obj@meta.data$cells_of_interest)
+
+
+
+dittoScatterPlot(
+    object = cells_to_keep,
+    x.var = "CD8A", y.var = "CD4",
+    color.var = "ann_lvl_2")
+
+
+group_1 <- c("Exhausted_CD8","Tcells_CD8","Proliferating_CD8","Proliferative_Tcells")
+group_2 <- c("Tcells_CD4_Naive","Tcells_CD4","Tcells_CD4_proliferating")
+
+cells_to_keep@meta.data$groups 
+cells_to_keep@meta.data <- cells_to_keep@meta.data %>% mutate(groups_compare = case_when(
+    ann_lvl_2 %in% group_1 ~ "CD8",
+    ann_lvl_2 %in% group_2 ~ "CD4",
+    TRUE ~ "Other Tcells"
+))
+table(cells_to_keep@meta.data$groups_compare)
+
+
+dittoScatterPlot(
+    object = cells_to_keep,
+    x.var = "CD8A", y.var = "CD4",
+    color.var = "groups_compare")
+
+```
+
+```{R color pallete determiniation}
+seurat_obj@meta.data$ann_lvl_2 %>% levels()
+Lymphoid_group <- c("Exhausted_CD8","Tcells_CD8","Proliferating_CD8","Proliferative_Tcells","Tcells_CD4_Naive","Tcells_CD4","Tcells_CD4_proliferating","Unknown","Tregs","Tregs_2","NK","Bcells","PlasmaCells")
+Myeloid_group <- c("Monocytes","Macrophages","Neutrophils","Lipid_associated_Macrophages","CD1CA+_A","CD1CA+_B","Microglia","pDCs","DC4_CD1C-","cDC1","mregDCs")
+Other_group <- c("Doublets","Bad-quality")
+new_list <-NULL
+new_list <- rbind(Lymphoid_group,Myeloid_group)
+new_list <- rbind(new_list,Other_group)
+seurat_obj@meta.data$ann_lvl_2 %>% levels() %in% new_list 
+
+
+seurat_obj@meta.data <- seurat_obj@meta.data %>% mutate(plot_lvl_1 = case_when(
+    ann_lvl_2 %in% Lymphoid_group ~ "Lymphoid",
+    ann_lvl_2 %in% Myeloid_group ~ "Myeloid",
+    TRUE ~ "Others"
+))
+table(seurat_obj@meta.data$plot_lvl_1)
+dittoBarPlot(seurat_obj, "plot_lvl_1", group.by = "primary_sample", color.panel = palette_lvl_1)
+ggsave(paste0(output_figs,"barplot_lvl1.png"))
+
+```
+
+
+```{R plot level 2}
+Tcells <- c("Exhausted_CD8","Tcells_CD8","Proliferating_CD8","Proliferative_Tcells","Tcells_CD4_Naive","Tcells_CD4","Tcells_CD4_proliferating","Unknown","Tregs","Tregs_2")
+Bcells <- c("Bcells","PlasmaCells")
+Nks    <- c("NK")
+Macrophage  <- c("Macrophages","Lipid_associated_Macrophages")
+Microglia <- c("Microglia")
+Monocyte <- c("Monocytes")
+Neutrophil <- c("Neutrophils")
+DCs <- c("CD1CA+_A","CD1CA+_B","pDCs","DC4_CD1C-","cDC1","mregDCs")
+Other_group <- c("Doublets","Bad-quality")
+
+table(seurat_obj@meta.data[seurat_obj@meta.data$plot_lvl_1 == "Others",])
+
+seurat_obj@meta.data <- seurat_obj@meta.data %>% mutate(plot_lvl_2 = case_when(
+    ann_lvl_2 %in% Tcells ~ "Tcells",
+    ann_lvl_2 %in% Bcells ~ "Bcells",
+    ann_lvl_2 %in% Nks ~ "NKs",
+    ann_lvl_2 %in% Macrophage ~ "Macrophage",
+    ann_lvl_2 %in% Microglia ~ "Microglia",
+    ann_lvl_2 %in% Monocyte ~ "Monocyte",
+    ann_lvl_2 %in% Neutrophil ~ "Neutrophil",
+    ann_lvl_2 %in% DCs ~ "DCs",
+    TRUE ~ "Others"
+))
+seurat_obj@meta.data$plot_lvl_2<- factor(seurat_obj@meta.data$plot_lvl_2, levels = c(
+    c("Tcells","NKs","Bcells","Macrophage","Microglia","Monocyte","Neutrophil","DCs","Others")
+))
+seurat_obj@meta.data$plot_lvl_2 %>% levels()
+table(seurat_obj@meta.data$plot_lvl_2)
+cluster_order <- match(levels(seurat_obj@meta.data[["plot_lvl_2"]]), metaLevels("plot_lvl_2", seurat_obj))
+dittoBarPlot(seurat_obj, var = "plot_lvl_2", group.by = "primary_sample", color.panel = palette_lvl_2,var.labels.reorder =cluster_order )
+
+ggsave(paste0(output_figs,"barplot_lvl2.png"))
+```
+
+
+```{R plotting level 3}
+Tcells <- c("Proliferative_Tcells","Unknown")
+CD8 <- c("Exhausted_CD8","Tcells_CD8","Proliferating_CD8")
+CD4 <- c("Tcells_CD4_Naive","Tcells_CD4","Tcells_CD4_proliferating")
+Treg <- c("Tregs","Tregs_2")
+Bcells <- c("Bcells")
+Plasmacells <- c("PlasmaCells")
+Nks    <- c("NK")
+Macrophage  <- c("Macrophages","Lipid_associated_Macrophages")
+Microglia <- c("Microglia")
+Monocyte <- c("Monocytes")
+Neutrophil <- c("Neutrophils")
+DCs <- c("CD1CA+_A","CD1CA+_B","pDCs","DC4_CD1C-","cDC1","mregDCs")
+Other_group <- c("Doublets","Bad-quality")
+
+# table(seurat_obj@meta.data[seurat_obj@meta.data$plot_lvl_1 == "Others",])
+
+seurat_obj@meta.data <- seurat_obj@meta.data %>% mutate(plot_lvl_3 = case_when(
+    ann_lvl_2 %in% Tcells ~ "Tcells",
+    ann_lvl_2 %in% CD8 ~ "CD8",
+    ann_lvl_2 %in% CD4 ~ "CD4",
+    ann_lvl_2 %in% Treg ~ "Tregs",
+    ann_lvl_2 %in% Bcells ~ "Bcells",
+    ann_lvl_2 %in% Plasmacells ~ "PlasmaCells",
+    ann_lvl_2 %in% Nks ~ "NKs",
+    ann_lvl_2 %in% Macrophage ~ "Macrophage",
+    ann_lvl_2 %in% Microglia ~ "Microglia",
+    ann_lvl_2 %in% Monocyte ~ "Monocyte",
+    ann_lvl_2 %in% Neutrophil ~ "Neutrophil",
+    ann_lvl_2 %in% DCs ~ "DCs",
+    TRUE ~ "Others"
+))
+seurat_obj@meta.data$plot_lvl_3 <- factor(seurat_obj@meta.data$plot_lvl_3, levels = c(
+    c("Tcells","CD8","CD4","Tregs","NKs","Bcells","PlasmaCells","Macrophage","Microglia","Monocyte","Neutrophil","DCs","Others")
+))
+seurat_obj@meta.data$plot_lvl_3 %>% levels()
+table(seurat_obj@meta.data$plot_lvl_3)
+cluster_order <- match(levels(seurat_obj@meta.data[["plot_lvl_3"]]), metaLevels("plot_lvl_3", seurat_obj))
+dittoBarPlot(seurat_obj, var = "plot_lvl_3", group.by = "primary_sample", color.panel = palette_lvl_3,var.labels.reorder =cluster_order )
+
+ggsave(paste0(output_figs,"barplot_lvl3.png"))
+
+```
+
+
+```{R make the plots flipped and colour using nejm_colors}
+
+dittoBarPlot(seurat_obj, var = "primary_sample", group.by = "plot_lvl_1", color.panel = nejm_colors)
+ggsave(paste0(output_figs,"barplot_flipped_lvl1.png"))
+
+dittoBarPlot(seurat_obj, var = "primary_sample", group.by = "plot_lvl_2", color.panel = nejm_colors)
+ggsave(paste0(output_figs,"barplot_flipped_lvl2.png"))
+
+dittoBarPlot(seurat_obj, var = "primary_sample", group.by = "plot_lvl_3", color.panel = nejm_colors)
+ggsave(paste0(output_figs,"barplot_flipped_lvl3.png"))
+
+```
+
+
+```{R}
+#Immune subset T-cell specific.
+```
+
+
+
+# Adding meta-data from split t-cell population on mt percent
+
+```{R preparing metadata for addition}
+# unique(Idents(seurat_obj))
+low_mt_tseur@meta.data$mt_annotation <-  low_mt_tseur@meta.data$low_mt_annotation_specific
+high_mt_tseur@meta.data$mt_annotation <-  high_mt_tseur@meta.data$high_mt_annotation_specific
+
+cells_meta_trim_low <- subset(low_mt_tseur@meta.data, select = c("mt_annotation"))
+cells_meta_trim_high <- subset(high_mt_tseur@meta.data, select = c("mt_annotation"))
+```
+
+
+```{R adding metadata}
+meta_data_to_add <- NULL
+meta_data_to_add <- rbind(cells_meta_trim_low,cells_meta_trim_high)
+
+tseur <- AddMetaData(tseur,meta_data_to_add)
+table(tseur@meta.data$mt_annotation)
+dittoDimPlot(tseur, reduction.use = paste0("umap.harmony.","Tcell"), var = "mt_annotation",split.by ="primary_sample", do.label = FALSE)
+dittoDimPlot(tseur, reduction.use = paste0("umap.harmony.","Tcell"), var = "mt_annotation", split.by = "mt_annotation",do.label = T)
+# ggsave(filename=paste0(output_figs,"annotated_total_tcells.png"), width = 20, height = 20)  
+dittoDimPlot(tseur, reduction.use = paste0("umap.harmony.","Tcell"), var = "mt_annotation", split.by = "mt_annotation",do.label = T)
+
+tseur@meta.data %>% colnames()
+dittoBarPlot(tseur, var = "mt_annotation", group.by = "primary_sample")
+
+```
+
+
+
+```{R rmd, eval = F}
+rmarkdown::render(
+    input = paste0("brain_met/02_scripts/06_analysing_annotations/01_determine_colour_sets.rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits",
+    output_file = paste0("01_determine_colour_sets.html")
+)
+```

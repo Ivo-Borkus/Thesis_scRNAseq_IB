@@ -1,0 +1,206 @@
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+```
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+library(DoubletFinder)
+library(clustree)
+library(knitr)
+library(rscrublet)
+library(Matrix)
+library(patchwork)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/lineage_annotation/per_sample_annotation.rmd")
+```
+
+```{R Loading meta data, echo = FALSE, message = FALSE}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+nejm_colors <- paletteer::paletteer_d(
+    "ggsci::default_nejm", length(levels(as.factor(meta_data$sample_name)))
+)
+
+output_umap_res <- "03_processing/10_integration/figs/umap_res/"
+output_umap_feat <- "03_processing/10_integration/figs/umap_feature/"
+```
+
+
+```{R Loading subsetted data}
+# processed_list <- readRDS(file = "03_processing/09_subset_annotation/data/processed_list.rds")
+```
+
+
+```{R Functions, eval = TRUE}
+merge_list_seurat <- function(seurat_list) {
+    meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+    sample_ids <- meta_data$sample_fullname
+    seurat_obj_list <- map(sample_ids, function(id) {
+        index <- match(id, sample_ids)
+        seurat_obj <- seurat_list[[index]]
+        seurat_obj$sample <- id
+        seurat_obj
+    })
+    names(seurat_obj_list) <- sample_ids
+    seurat_obj <- merge(seurat_obj_list[[1]],
+        y = seurat_obj_list[2:length(seurat_obj_list)],
+        add.cell.ids = sample_ids
+    )
+    seurat_obj <- JoinLayers(seurat_obj)
+    return(seurat_obj)
+}
+
+umap_resolution <- function(seurat_obj, reduction_name) {
+    resolution_columns <- grep("^RNA_snn_res\\.",
+        colnames(seurat_obj@meta.data),
+        value = TRUE
+    )
+    umap_resolution_combined <- DimPlot(
+        object = seurat_obj,
+        reduction = reduction_name,
+        group.by = resolution_columns,
+        pt.size = 0.1,
+        label = TRUE
+    ) & NoLegend() &
+        theme(plot.title = element_text(size = 10)) &
+        NoAxes()
+    return(umap_resolution_combined)
+}
+feature_plot <- function(seurat_obj, reduction_name) {
+    fplot <- FeaturePlot(seurat_obj,
+        features = c("PTPRC", "CD4", "CD8A", "CD8B", "CD3D", "CD3E", "MS4A1", "CD79A", "CD79B", "S100A8", "CD14", "C1QC", "CD68", "LILRA4", "IL3RA", "PRDM16", "CLEC9A", "CD1C", "MAG", "MLANA"),
+        reduction = reduction_name,
+        ncol = 3
+    ) & NoAxes()
+    return(fplot)
+}
+
+umap_sample <- function(seurat_obj, reduction_name, title_name) {
+    umap_by_sample <- DimPlot(
+        object = seurat_obj,
+        reduction = reduction_name,
+        group.by = "sample",
+        pt.size = 0.1,
+        label = F, cols = nejm_colors
+    ) & theme(plot.title = element_text(size = 10)) &
+        NoAxes() & labs(title = title_name)
+}
+```
+
+```{R Integrating samples before subset,eval = TRUE}
+seurat_list <- lapply(list.files("03_processing/08_annotation/data", full.names = TRUE)[1:8], function(file) {
+    sample <- sub("\\..*", "", basename(file))
+    seurat_obj <- readRDS(file)
+})
+
+seurat_obj <- merge_list_seurat(seurat_list)
+rm(seurat_list)
+reduction_name <- "merged"
+
+
+seurat_obj <- NormalizeData(seurat_obj)
+seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = "vst", nfeatures = 2000, verbose = TRUE)
+all.genes <- rownames(seurat_obj)
+seurat_obj <- ScaleData(object = seurat_obj, features = all.genes, verbose = FALSE)
+seurat_obj <- RunPCA(object = seurat_obj, features = VariableFeatures(object = seurat_obj), nfeatures.print = 5, ndims.print = 1:2, reduction.name = paste0("pca_", reduction_name))
+seurat_obj <- FindNeighbors(seurat_obj, dims = 1:10, reduction = paste0("pca_", reduction_name))
+
+res_values <- c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.5)
+seurat_obj <- FindClusters(seurat_obj, resolution = res_values, algorithm = 4)
+seurat_obj <- RunUMAP(seurat_obj, dims = 1:10, reduction = paste0("pca_", reduction_name), reduction.name = paste0("umap.", reduction_name), verbose = FALSE)
+# ggsave(umap_resolution(seurat_obj, paste0("umap.", reduction_name)), file = paste0(output_umap_res, reduction_name, ".png"), height = 20, width = 20)
+# ggsave(feature_plot(seurat_obj, paste0("umap.", reduction_name)), file = paste0(output_umap_feat, reduction_name, ".png"), height = 20, width = 20)
+# ggsave(umap_sample(seurat_obj, paste0("umap.", reduction_name), "Merging of samples using all QC checked cells"), file = paste0("03_processing/10_integration/figs/", reduction_name, "_sample.png"), height = 20, width = 20)
+
+saveRDS(seurat_obj, file = "03_processing/10_integration/data/merged_scratch.rds")
+```
+
+
+```{R Integrating samples after subset,eval = TRUE}
+subset_list_immune <- lapply(list.files("03_processing/08_annotation/data", full.names = TRUE)[1:8], function(file) {
+    sample <- sub("\\..*", "", basename(file))
+    seurat_obj <- readRDS(file)
+    if ("Brain" %in% levels(seurat_obj)) {
+        seurat_obj <- subset(x = seurat_obj, idents = c("Tumour", "Brain"), invert = TRUE)
+    } else {
+        seurat_obj <- subset(x = seurat_obj, idents = c("Tumour"), invert = TRUE)
+    }
+})
+
+
+seurat_obj <- merge_list_seurat(subset_list_immune)
+rm(subset_list_immune)
+
+reduction_name <- "merged_subset_immune"
+seurat_obj <- NormalizeData(seurat_obj)
+seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = "vst", nfeatures = 2000, verbose = TRUE)
+all.genes <- rownames(seurat_obj)
+seurat_obj <- ScaleData(object = seurat_obj, features = all.genes, verbose = FALSE)
+seurat_obj <- RunPCA(object = seurat_obj, features = VariableFeatures(object = seurat_obj), nfeatures.print = 5, ndims.print = 1:2, reduction.name = paste0("pca_", reduction_name))
+seurat_obj <- FindNeighbors(seurat_obj, dims = 1:10, reduction = paste0("pca_", reduction_name))
+
+res_values <- c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.5)
+seurat_obj <- FindClusters(seurat_obj, resolution = res_values, algorithm = 4)
+seurat_obj <- RunUMAP(seurat_obj, dims = 1:10, reduction = paste0("pca_", reduction_name), reduction.name = paste0("umap.", reduction_name), verbose = FALSE)
+ggsave(umap_resolution(seurat_obj, paste0("umap.", reduction_name)), file = paste0(output_umap_res, reduction_name, ".png"), height = 20, width = 20)
+ggsave(feature_plot(seurat_obj, paste0("umap.", reduction_name)), file = paste0(output_umap_feat, reduction_name, ".png"), height = 20, width = 20)
+ggsave(umap_sample(seurat_obj, paste0("umap.", reduction_name), "mergin of samples using immune cells"), file = paste0("03_processing/10_integration/figs/", reduction_name, "_sample.png"), height = 20, width = 20)
+
+saveRDS(seurat_obj, file = "03_processing/10_integration/data/merged_subset_immune.rds")
+```
+
+
+```{R subset tumour, eval = TRUE}
+subset_list_tumour <- lapply(list.files("03_processing/08_annotation/data", full.names = TRUE)[1:8], function(file) {
+    sample <- sub("\\..*", "", basename(file))
+    seurat_obj <- readRDS(file)
+    seurat_obj <- subset(x = seurat_obj, idents = c("Tumour"))
+})
+
+
+
+seurat_obj <- merge_list_seurat(subset_list_tumour)
+rm(subset_list_tumour)
+
+reduction_name <- "merged_subset_tumour"
+seurat_obj <- NormalizeData(seurat_obj)
+seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = "vst", nfeatures = 2000, verbose = TRUE)
+all.genes <- rownames(seurat_obj)
+seurat_obj <- ScaleData(object = seurat_obj, features = all.genes, verbose = FALSE)
+seurat_obj <- RunPCA(object = seurat_obj, features = VariableFeatures(object = seurat_obj), nfeatures.print = 5, ndims.print = 1:2, reduction.name = paste0("pca_", reduction_name))
+seurat_obj <- FindNeighbors(seurat_obj, dims = 1:10, reduction = paste0("pca_", reduction_name))
+
+res_values <- c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.5)
+seurat_obj <- FindClusters(seurat_obj, resolution = res_values, algorithm = 4)
+seurat_obj <- RunUMAP(seurat_obj, dims = 1:10, reduction = paste0("pca_", reduction_name), reduction.name = paste0("umap.", reduction_name), verbose = FALSE)
+ggsave(umap_resolution(seurat_obj, paste0("umap.", reduction_name)), file = paste0(output_umap_res, reduction_name, ".png"), height = 20, width = 20)
+ggsave(feature_plot(seurat_obj, paste0("umap.", reduction_name)), file = paste0(output_umap_feat, reduction_name, ".png"), height = 20, width = 20)
+ggsave(umap_sample(seurat_obj, paste0("umap.", reduction_name), "Integration of samples using tumour cells"), file = paste0("03_processing/10_integration/figs/", reduction_name, "_sample.png"), height = 20, width = 20)
+
+saveRDS(seurat_obj, file = "03_processing/10_integration/data/merged_subset_tumour.rds")
+```

@@ -1,0 +1,410 @@
+
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+params:
+    sample: "105086-009-002"
+    fullname: "Lung_BrM23-24"
+title: "`r paste0('Analysis of singlecellRNAseq sample ',params$fullname, ' with ID: ', params$sample)`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE) # nolint
+set.seed(91774)
+```
+
+
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+library(DoubletFinder)
+library(clustree)
+library(knitr)
+library(rscrublet)
+library(Matrix)
+library(patchwork)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+```
+
+```{R Loading meta data, echo = FALSE, message = FALSE}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_name) {
+    print(sample)
+}
+```
+
+
+```{R functions, echo = FALSE}
+excel_sheet <- function(markers, output_dir, name) {
+    library(writexl)
+    print(paste0("Output will be put in: ", output_dir, name, ".xlsx"))
+    if (file.exists(output_dir)) {
+        markers %>%
+            arrange(cluster, desc(avg_log2FC)) %>% # Arrange within each cluster
+            group_by(cluster) %>%
+            select(cluster, pct.1, pct.2, p_val, p_val_adj, avg_log2FC, gene) %>%
+            group_split() %>% # Split into list by 'cluster'
+            setNames(unique(markers$cluster)) %>% # Name list elements
+            writexl::write_xlsx(paste0(output_dir, name, ".xlsx"))
+    } else {
+        stop("Directory does not exist")
+    }
+}
+
+resolutions_umap <- function(seurat_obj) {
+    resolution_columns <- grep("^RNA_snn_res\\.",
+        colnames(seurat_obj@meta.data),
+        value = TRUE
+    )
+    print(resolution_columns)
+    resolution_umap <- DimPlot(
+        object = seurat_obj,
+        reduction = "umap.unintegrated",
+        group.by = resolution_columns,
+        pt.size = 0.1,
+        label = TRUE
+    ) & NoLegend() &
+        theme(plot.title = element_text(size = 10)) &
+        NoAxes()
+    return(resolution_umap)
+}
+
+
+processing_sample <- function(seurat_obj) {
+    cat(paste("don't forget to set Ident, usage:", "res <- '0.1'", "Idents(seurat_obj) <- paste0('RNA_snn_res.'', res)", sep = "\n"))
+    seurat_obj.markers <- FindAllMarkers(
+        object = seurat_obj,
+        only.pos = TRUE, min.pct = 0.25,
+        logfc.threshold = 0.25
+    )
+    seurat_obj.markers %>%
+        arrange(cluster, desc(avg_log2FC)) %>%
+        ungroup() %>%
+        group_by(cluster) %>%
+        slice_head(n = 5) %>%
+        select(avg_log2FC, cluster, gene) %>%
+        print()
+    return(seurat_obj.markers)
+}
+nsclc_sig <- c("CDK4", "PUM3", "NTS", "EPCAM", "KRT17", "S100A2", "SFN", "PTHLH", "PERP", "SPRR3", "AGR2", "CEACAM6", "FGB", "FGA", "FGG", "PAEP", "TESC", "SOX2", "CXCL1", "LAMC2")
+brm_sig <- c("SFTPB", "SFTPC", "NAPSA", "ENO1", "BRD2", "IFITM3", "MAGED2", "CD81", "MMP14", "SMARCE1", "POSTN", "MAGEA3", "CD44", "MMP2", "SMAD5", "BRAF", "MAGEC2", "SPARC", "CD109", "CCDC167", "BRD7", "BRD8", "MMP17", "BRD4", "SMARCAD1", "KRT5", "KRT19", "KRT8", "KRT18", "CD24", "KRT15", "PTGDS", "CDH2", "CDH13", "SELENOP", "CD47", "ALDH3A2", "ABCD2", "PTPN7")
+cell_cycle_genes <- read.csv(file = "03_processing/07_Subclustering/data/subsets/lineage/Carmona_STACAS_cellCycle.symbol.DE.specific.170120.csv")
+cell_cycle_genes <- toupper(cell_cycle_genes[, 2])
+
+checking_for_sig <- function(seurat_obj, output_dir, name) {
+    seurat_obj <- AddModuleScore(
+        object = seurat_obj,
+        features = list(nsclc_sig),
+        ctrl = 5,
+        name = "nsclc_sig"
+    )
+    seurat_obj <- AddModuleScore(
+        object = seurat_obj,
+        features = list(brm_sig),
+        ctrl = 5,
+        name = "brm_sig"
+    )
+    seurat_obj <- AddModuleScore(
+        object = seurat_obj,
+        features = list(cell_cycle_genes),
+        ctrl = 5,
+        name = "cc_sig"
+    )
+    vln <- VlnPlot(seurat_obj, features = c("nsclc_sig1", "brm_sig1", "cc_sig1", "PTPRC", "MAG", "MLANA"), ncol = 3)
+    ggsave(vln, file = paste0(output_dir, name), width = 20)
+}
+
+
+umap_annotated <- function(seurat_obj, output_dir, name) {
+    cat("File will be saved in: \n")
+    cat(paste0(output_dir, name))
+    umap_resolution_annotated <- DimPlot(
+        object = seurat_obj,
+        reduction = "umap.unintegrated",
+        pt.size = 0.1,
+        label = TRUE
+    ) & NoLegend() &
+        theme(plot.title = element_text(size = 10)) &
+        NoAxes()
+    ggsave(umap_resolution_annotated, file = paste0(output_dir, name))
+}
+```
+
+```{R loading in seurat_data}
+output_dir <- paste0(here(), "/", "03_processing/08_annotation/")
+output_marker <- paste0(output_dir, "markerlist_per_sample/")
+output_umap <- paste0(output_dir, "figs/")
+output_vln <- paste0(output_dir, "figs/vln/")
+
+
+
+## Load samples processed by: 02_scrips/lineage_annotation/main.rmd
+# object_list <- lapply(meta_data$sample_name, function(sample) {
+#     seurat_obj <- readRDS(file = paste0("03_processing/01_QC/data/subsets/Doublet_finder/", sample, ".rds")) ## QC processed and doudblet finder annotated seurat
+#     seurat_obj[["percent.rb"]] <- PercentageFeatureSet(seurat_obj, pattern = "^RP[SL]")
+#     seurat_obj <- seurat_obj
+# })
+# saveRDS(object_list, file = "03_processing/08_annotation/data/seurat_obj_list.rds")
+
+object_list <- readRDS(file = "03_processing/08_annotation/data/seurat_obj_list.rds") # List object of the QC processed and doublet finder annotated seurat objects
+```
+
+```{R resolution umaps, eval = FALSE}
+for (index in 1:length(object_list)) {
+    object <- object_list[[index]]
+    umap <- resolutions_umap(object)
+    ggsave(umap, file = paste0(output_umap, meta_data$sample_name[index], "_umap.png"))
+}
+```
+
+```{R sample_1}
+index <- 1
+res <- "0.1"
+new.cluster.ids <- c("Tumour", "T-cells", "Myeloid")
+
+seurat_obj <- object_list[[index]]
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+seurat_obj.markers <- processing_sample(seurat_obj)
+
+names(new.cluster.ids) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids)
+seurat_obj[["general_annotation"]] <- Idents(seurat_obj)
+seurat_obj.markers <- processing_sample(seurat_obj)
+umap_annotated(seurat_obj, output_dir = output_umap, name = paste0(meta_data$sample_name[index], "UMAP_annotated.png"))
+
+checking_for_sig(seurat_obj, output_dir = output_vln, name = paste0("vln_", meta_data$sample_name[index], ".png"))
+excel_sheet(seurat_obj.markers, output_dir = output_marker, name = paste0("annotated_subclusters_", meta_data$sample_name[index]))
+
+
+saveRDS(seurat_obj, file = paste0("03_processing/08_annotation/data/", meta_data$sample_name[index], "_annotated.rds"))
+# seurat_obj <- subset(
+#     seurat_obj,
+#     nCount_RNA >= minUMI &
+#         nCount_RNA <= maxUMI &
+#         nFeature_RNA >= minfeat &
+#         nFeature_RNA <= maxfeat &
+#         percent_mt <= maxmt
+# ) invert = TRUE to exclude 1
+```
+
+
+```{R Sample_2}
+index <- 2
+res <- "0.7"
+new.cluster.ids <- c("T-cells", "T-cells", "T-cells", "Myeloid", "T-cells", "Brain", "Tumour", "B-cells")
+# new.cluster.ids <- c("T-cells_1", "T-cells_2", "Weird", "Myeloid", "T-clonal active cells", "Brain", "Tumour", "B-cells")
+
+seurat_obj <- object_list[[index]]
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+seurat_obj.markers <- processing_sample(seurat_obj)
+
+names(new.cluster.ids) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids)
+seurat_obj[["general_annotation"]] <- Idents(seurat_obj)
+seurat_obj.markers <- processing_sample(seurat_obj)
+umap_annotated(seurat_obj, output_dir = output_umap, name = paste0(meta_data$sample_name[index], "UMAP_annotated.png"))
+
+checking_for_sig(seurat_obj, output_dir = output_vln, name = paste0("vln_", meta_data$sample_name[index], ".png"))
+excel_sheet(seurat_obj.markers, output_dir = output_marker, name = paste0("annotated_subclusters_", meta_data$sample_name[index]))
+saveRDS(seurat_obj, file = paste0("03_processing/08_annotation/data/", meta_data$sample_name[index], "_annotated.rds"))
+```
+
+
+```{R Sample_3}
+index <- 3
+res <- "1.5"
+new.cluster.ids <- c(
+    "T-cells", "T-cells",
+    "Myeloid", "Tumour", "T-cells"
+)
+# new.cluster.ids <- c("T-cells and brain cells", "T-cells","Myeloid", "unclear at all", "T-cells")
+
+seurat_obj <- object_list[[index]]
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+seurat_obj.markers <- processing_sample(seurat_obj)
+excel_sheet(seurat_obj.markers, output_dir = output_marker, name = paste0("annotated_subclusters_", meta_data$sample_name[index]))
+
+names(new.cluster.ids) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids)
+seurat_obj[["general_annotation"]] <- Idents(seurat_obj)
+seurat_obj.markers <- processing_sample(seurat_obj)
+umap_annotated(seurat_obj, output_dir = output_umap, name = paste0(meta_data$sample_name[index], "UMAP_annotated.png"))
+
+checking_for_sig(seurat_obj, output_dir = output_vln, name = paste0("vln_", meta_data$sample_name[index], ".png"))
+excel_sheet(seurat_obj.markers, output_dir = output_marker, name = paste0("annotated_subclusters_", meta_data$sample_name[index]))
+saveRDS(seurat_obj, file = paste0("03_processing/08_annotation/data/", meta_data$sample_name[index], "_annotated.rds"))
+```
+
+
+
+```{R Sample_4}
+index <- 4
+res <- "0.3"
+new.cluster.ids <- c("Myeloid", "T-cells", "T-cells", "T-cells", "T-cells", "T-cells", "Myeloid", "B-cells", "Brain", "T-cells", "Tumour")
+# new.cluster.ids <- c("Myeloid", "T-cells", "T-cells", "T-cells", "T-cells", "T-cells", "Myeloid", "B-cells", "Brain", "Check", "Tumour")
+
+seurat_obj <- object_list[[index]]
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+seurat_obj.markers <- processing_sample(seurat_obj)
+
+names(new.cluster.ids) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids)
+seurat_obj[["general_annotation"]] <- Idents(seurat_obj)
+seurat_obj.markers <- processing_sample(seurat_obj)
+umap_annotated(seurat_obj, output_dir = output_umap, name = paste0(meta_data$sample_name[index], "UMAP_annotated.png"))
+
+checking_for_sig(seurat_obj, output_dir = output_vln, name = paste0("vln_", meta_data$sample_name[index], ".png"))
+excel_sheet(seurat_obj.markers, output_dir = output_marker, name = paste0("annotated_subclusters_", meta_data$sample_name[index]))
+saveRDS(seurat_obj, file = paste0("03_processing/08_annotation/data/", meta_data$sample_name[index], "_annotated.rds"))
+```
+
+
+
+
+```{R Sample_5}
+index <- 5
+res <- "0.2"
+new.cluster.ids <- c("Brain", "Myeloid", "T-cells", "Myeloid", "Tumour", "Myeloid", "Brain")
+# new.cluster.ids <- c("Brain", "Myeloid", "T-cells", "Myeloid", "Tumour", "pDCs", "Brain")
+
+seurat_obj <- object_list[[index]]
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+seurat_obj.markers <- processing_sample(seurat_obj)
+
+names(new.cluster.ids) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids)
+seurat_obj[["general_annotation"]] <- Idents(seurat_obj)
+seurat_obj.markers <- processing_sample(seurat_obj)
+umap_annotated(seurat_obj, output_dir = output_umap, name = paste0(meta_data$sample_name[index], "UMAP_annotated.png"))
+
+checking_for_sig(seurat_obj, output_dir = output_vln, name = paste0("vln_", meta_data$sample_name[index], ".png"))
+excel_sheet(seurat_obj.markers, output_dir = output_marker, name = paste0("annotated_subclusters_", meta_data$sample_name[index]))
+saveRDS(seurat_obj, file = paste0("03_processing/08_annotation/data/", meta_data$sample_name[index], "_annotated.rds"))
+```
+
+
+
+```{R Sample_6}
+index <- 6
+res <- "0.01"
+new.cluster.ids <- c("T-cells", "Myeloid", "B-cells", "Brain", "Tumour")
+
+seurat_obj <- object_list[[index]]
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+seurat_obj.markers <- processing_sample(seurat_obj)
+
+names(new.cluster.ids) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids)
+seurat_obj[["general_annotation"]] <- Idents(seurat_obj)
+seurat_obj.markers <- processing_sample(seurat_obj)
+umap_annotated(seurat_obj, output_dir = output_umap, name = paste0(meta_data$sample_name[index], "UMAP_annotated.png"))
+
+checking_for_sig(seurat_obj, output_dir = output_vln, name = paste0("vln_", meta_data$sample_name[index], ".png"))
+excel_sheet(seurat_obj.markers, output_dir = output_marker, name = paste0("annotated_subclusters_", meta_data$sample_name[index]))
+saveRDS(seurat_obj, file = paste0("03_processing/08_annotation/data/", meta_data$sample_name[index], "_annotated.rds"))
+```
+
+
+
+```{R Sample_7}
+index <- 7
+res <- "0.05"
+new.cluster.ids <- c("T-cells", "Myeloid", "T-cells", "B-cells", "Tumour", "Brain", "Myeloid")
+# new.cluster.ids <- c("T-cells", "Myeloid", "T-cells", "B-cells", "Tumour", "Brain", "pDCs")
+
+seurat_obj <- object_list[[index]]
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+seurat_obj.markers <- processing_sample(seurat_obj)
+
+names(new.cluster.ids) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids)
+seurat_obj[["general_annotation"]] <- Idents(seurat_obj)
+seurat_obj.markers <- processing_sample(seurat_obj)
+umap_annotated(seurat_obj, output_dir = output_umap, name = paste0(meta_data$sample_name[index], "UMAP_annotated.png"))
+
+checking_for_sig(seurat_obj, output_dir = output_vln, name = paste0("vln_", meta_data$sample_name[index], ".png"))
+excel_sheet(seurat_obj.markers, output_dir = output_marker, name = paste0("annotated_subclusters_", meta_data$sample_name[index]))
+saveRDS(seurat_obj, file = paste0("03_processing/08_annotation/data/", meta_data$sample_name[index], "_annotated.rds"))
+```
+
+
+
+```{R Sample_8}
+index <- 8
+res <- "0.3"
+new.cluster.ids <- c("Tumour", "T-cells", "Tumour", "T-cells", "Myeloid", "Tumour", "T-cells", "T-cells", "Brain")
+# new.cluster.ids <- c("Tumour", "T-cells", "Tumour_2", "T-cells", "Myeloid", "Tumour_3", "T-cells", "T-cells_doublets", "Brain")
+
+seurat_obj <- object_list[[index]]
+Idents(seurat_obj) <- paste0("RNA_snn_res.", res)
+seurat_obj.markers <- processing_sample(seurat_obj)
+
+names(new.cluster.ids) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids)
+seurat_obj[["general_annotation"]] <- Idents(seurat_obj)
+seurat_obj.markers <- processing_sample(seurat_obj)
+umap_annotated(seurat_obj, output_dir = output_umap, name = paste0(meta_data$sample_name[index], "UMAP_annotated.png"))
+
+checking_for_sig(seurat_obj, output_dir = output_vln, name = paste0("vln_", meta_data$sample_name[index], ".png"))
+excel_sheet(seurat_obj.markers, output_dir = output_marker, name = paste0("annotated_subclusters_", meta_data$sample_name[index]))
+saveRDS(seurat_obj, file = paste0("03_processing/08_annotation/data/", meta_data$sample_name[index], "_annotated.rds"))
+```
+
+
+
+
+
+
+```{R Annotating_clusters, echo = FALSE, eval = F}
+df <- data.frame()
+for (files in list.files("03_processing/08_annotation/data", full.names = TRUE)[1:8]) {
+    print(basename(files))
+    print(files)
+    sample <- sub("\\..*", "", basename(files))
+    seurat_obj <- readRDS(files)
+    cluster_counts <- table(Idents(seurat_obj))
+    cluster_df <- as.data.frame(cluster_counts)
+    colnames(cluster_df) <- c("Cluster", "Cell_Count")
+    cluster_df$sample <- sample
+    df <- rbind(df, cluster_df)
+}
+
+df %>%
+    group_by(sample, Cluster) %>%
+    summarise(n = sum(Cell_Count), .groups = "drop") %>%
+    group_by(sample) %>%
+    mutate(pct = (n / sum(n)) * 100) -> pct_df
+
+
+ggplot(data = pct_df, aes(x = sample, y = pct, fill = Cluster)) +
+    geom_bar(stat = "identity") +
+    theme(axis.text.x = element_text(angle = -90, hjust = 0))
+ggsave(file = "02_scripts/better_plot.png")
+```
+
+
+```{R, eval = F}
+rmarkdown::render(
+    input = paste0("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits",
+    output_file = paste0("per_sample_annotation.html")
+)
+```

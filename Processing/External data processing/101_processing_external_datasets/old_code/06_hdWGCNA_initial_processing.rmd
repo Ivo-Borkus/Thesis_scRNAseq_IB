@@ -1,0 +1,590 @@
+---
+title: "Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+params:
+    dataset_name: "Lee"
+    cell_type: "T_cells"
+
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, fig.width = 20, fig.height = 20)
+```
+
+
+# Loading libraries and setting directories
+```{R loading libraries, include = F, echo = T}
+library(Seurat)
+
+# plotting and data science packages
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+
+# co-expression network analysis packages:
+library(WGCNA)
+library(hdWGCNA)
+library(knitr)
+# using the cowplot theme for ggplot
+theme_set(theme_cowplot())
+
+# set random seed for reproducibility
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+source("02_scripts/101_processing_external_datasets/qc_functions.R")
+set.seed(1123)
+# optionally enable multithreading
+enableWGCNAThreads(nThreads = 8)
+```
+
+# loading datasets and selecting the object of interest
+
+```{R loading dataset}
+seurat_list_prepared <- readRDS("03_processing/101_processing_exernal/data/processed_seurat_list/seurat_list_prepared.rds")
+```
+
+
+# Setting arguments
+
+```{R printing_set_paramaters, echo = F}
+params_table <- data.frame(
+    Parameter = c("Dataset_name", "Cell type of interest"),
+    Value = c(params$dataset_name, params$cell_type)
+)
+kable(params_table, caption = "Report Parameters")
+```
+
+
+```{R arguments}
+dataset <- params$dataset_name
+cell_type_of_interest <- params$cell_type
+reduction_name <- paste0(dataset, "_im")
+sample_col_list <- list(
+    Biermann = "ID",
+    Gonzalez = "sample_names",
+    Inhouse = "sample",
+    Lee = "Sample"
+)
+sample_col <- sample_col_list[[dataset]]
+if (dataset == "Inhouse") {
+    reduction_name <- "immune_no_doub"
+}
+seurat_obj <- seurat_list_prepared[[dataset]]
+
+output_figs <- paste0("03_processing/102_hdWGCNA/figs/batch/", reduction_name, "_", cell_type_of_interest, "_")
+```
+
+## Processing tabs {.tabset}
+
+### Subset seurat
+
+#### Some basic overview of the dataset T cells before subsetting
+```{R plotting}
+# Figures should be saved as the subsetted seurat:
+output_figs <- paste0("03_processing/102_hdWGCNA/figs/batch/", reduction_name, "_", cell_type_of_interest, "_subset_")
+
+FeaturePlot(seurat_obj,
+    reduction = paste0("umap.harmony.", reduction_name),
+    features = c("CD8A", "CD3E", "CD3D", "CD68", "CD163", "IGHG3", "MS4A1")
+) & NoAxes()
+Idents(seurat_obj) <- "generalised_ann_1"
+VlnPlot(seurat_obj, features = c("CD8A", "CD3E", "CD3D", "CD68", "CD163", "IGHG3", "MS4A1"))
+seurat_obj %>% Reductions()
+DimPlot(seurat_obj,
+    reduction = paste0("umap.harmony.", reduction_name),
+    label = T
+) & NoAxes()
+```
+
+
+```{R Running seurat subsetting, child ="02_scripts/101_processing_external_datasets/childs_hdWGCNA/subset_seurat.rmd"}
+```
+
+#### Some basic overview of the dataset T cells after subsetting
+```{R plotting_2}
+FeaturePlot(seurat_obj,
+    reduction = paste0("umap.harmony.", reduction_name),
+    features = c("CD8A", "CD3E", "CD3D", "CD68", "CD163", "IGHG3", "MS4A1")
+) & NoAxes()
+Idents(seurat_obj) <- "generalised_ann_1"
+VlnPlot(seurat_obj, features = c("CD8A", "CD3E", "CD3D", "CD68", "CD163", "IGHG3", "MS4A1"))
+seurat_obj %>% Reductions()
+DimPlot(seurat_obj,
+    reduction = paste0("umap.harmony.", reduction_name),
+    label = T
+) & NoAxes()
+```
+
+#### Setting up WGCNA
+```{R setup wgcna}
+seurat_obj <- SetupForWGCNA(
+    seurat_obj,
+    gene_select = "variable", # the gene selection approach
+    wgcna_name = reduction_name # the name of the hdWGCNA experiment
+)
+```
+
+
+#### Setting up the metacells
+
+```{R setup metacells}
+# construct metacells  in each group
+seurat_obj <- MetacellsByGroups(
+    seurat_obj = seurat_obj,
+    group.by = c("generalised_ann_1", sample_col), # specify the columns in seurat_obj@meta.data to group by
+    reduction = paste0("harmony_pca.", reduction_name), # select the dimensionality reduction to perform KNN on
+    k = 25, # nearest-neighbors parameter
+    max_shared = 10, # maximum number of shared cells between two metacells
+    ident.group = "generalised_ann_1" # set the Idents of the metacell seurat object
+)
+
+# normalize metacell expression matrix:
+seurat_obj <- NormalizeMetacells(seurat_obj)
+```
+
+
+#### Setting the data expression only to t cells (Is it really necessary though?)
+```{R setdataexpression}
+seurat_obj <- SetDatExpr(
+    seurat_obj,
+    group_name = cell_type_of_interest,
+    group.by = "generalised_ann_1",
+    assay = "RNA",
+    layer = "data"
+)
+```
+
+
+#### determining softpower
+
+```{R softpower analysis}
+seurat_obj <- TestSoftPowers(
+    seurat_obj,
+    networkType = "signed" # you can also use "unsigned" or "signed hybrid"
+)
+
+# plot the results:
+plot_list <- PlotSoftPowers(seurat_obj)
+
+# assemble with patchwork
+wrap_plots(plot_list, ncol = 2)
+```
+
+
+```{R power_table function, include = F, echo = F, eval = F}
+power_table <- GetPowerTable(seurat_obj)
+```
+
+
+#### Constructing module network (and plotting dendograms)
+```{R constructing the network and plotting for different splits}
+seurat_obj <- ConstructNetwork(
+    seurat_obj,
+    tom_name = "TOM_matrix_0", # name of the topoligical overlap matrix written to disk
+    deepSplit = 0, # Lowest possible settings to get only the most robust modules
+    overwrite_tom = TRUE
+)
+PlotDendrogram(seurat_obj, main = "Tcell hdWGCNA Dendrogram_0")
+
+
+seurat_obj <- ConstructNetwork(
+    seurat_obj,
+    tom_name = "TOM_matrix_2", # name of the topoligical overlap matrix written to disk
+    deepSplit = 2, # Probably the most accurate, but depends on the graph, as it is a balance between sensitivity and robustness
+    overwrite_tom = TRUE
+)
+PlotDendrogram(seurat_obj, main = "Tcell hdWGCNA Dendrogram_2")
+
+seurat_obj <- ConstructNetwork(
+    seurat_obj,
+    tom_name = paste0("TOM_matrix_4", dataset, "_", cell_type_of_interest), # name of the topoligical overlap matrix written to disk
+    deepSplit = 4, # Highest possible setting yields all possible modules to be found (very sensitive)
+    overwrite_tom = F
+)
+PlotDendrogram(seurat_obj, main = "Tcell hdWGCNA Dendrogram_4")
+```
+
+#### Moduling eigengenes
+
+This function takes into account the network modules, performs PCA on the esubsetted gene matrices. Then the first PC with the highest variability in the Module is extracted as the Eigenmodule (basically the genes that explain the most variability in this module).
+
+```{R   extracting info from the top eigen genes, warning=F, echo = T, include = F}
+seurat_obj <- ModuleEigengenes(
+    seurat_obj,
+    group.by.vars = sample_col
+)
+### Warning::
+#   You're computing too large a percentage of total singular values, use a standard svd instead.
+
+hMEs <- GetMEs(seurat_obj) #  harmonized module eigengenes:
+
+MEs <- GetMEs(seurat_obj, harmonized = FALSE) # module eigengenes:
+```
+
+#### module connectivity on T-cells
+```{R determining the moduleconnectivity}
+seurat_obj <- ModuleConnectivity(
+    seurat_obj,
+    group.by = "generalised_ann_1", group_name = cell_type_of_interest
+)
+```
+
+#### Plotting module ranked genes
+```{R gene ranks and resetting name, fig.width = 10, fig.height = 10}
+seurat_obj <- ResetModuleNames(
+    seurat_obj,
+    new_name = paste0(cell_type_of_interest, "-M")
+)
+p <- PlotKMEs(seurat_obj, ncol = 2)
+p
+ggsave(plot = p, filename = paste0(output_figs, "ranked_genes_per_module.png"), width = 15, height = 15)
+```
+
+#### Extracting info from modules
+
+```{R getting module info}
+modules <- GetModules(seurat_obj) %>% subset(module != "grey")
+
+# show the first 6 columns:
+head(modules[, 1:6])
+
+hub_df <- GetHubGenes(seurat_obj, n_hubs = 10)
+
+head(hub_df)
+```
+
+#### plotting scores on featureplots
+
+```{R plotting scores}
+seurat_obj <- ModuleExprScore(
+    seurat_obj,
+    n_genes = 25,
+    method = "UCell"
+)
+
+plot_list <- ModuleFeaturePlot(
+    seurat_obj,
+    features = "hMEs", # plot the hMEs
+    order = TRUE, # order so the points with highest hMEs are on top
+    reduction = paste0("umap.harmony.", reduction_name)
+)
+# stitch together with patchwork
+wrap_plots(plot_list, ncol = 2)
+ggsave(filename = paste0(output_figs, "feature_plot_modules_hMEs.png"))
+
+
+plot_list <- ModuleFeaturePlot(
+    seurat_obj,
+    features = "MEs", # plot the hMEs
+    order = TRUE, # order so the points with highest hMEs are on top
+    reduction = paste0("umap.harmony.", reduction_name)
+)
+# stitch together with patchwork
+wrap_plots(plot_list, ncol = 2)
+ggsave(filename = paste0(output_figs, "feature_plot_modules_ME.png"))
+
+
+# make a featureplot of hub scores for each module
+plot_list <- ModuleFeaturePlot(
+    seurat_obj,
+    features = "scores", # plot the hub gene scores
+    order = "shuffle", # order so cells are shuffled
+    ucell = TRUE, # depending on Seurat vs UCell for gene scoring
+    reduction = paste0("umap.harmony.", reduction_name)
+)
+
+# stitch together with patchwork
+wrap_plots(plot_list, ncol = 2)
+ggsave(filename = paste0(output_figs, "feature_plot_modules_hub.png"))
+```
+
+```{R saving seurat, eval = T}
+saveRDS(seurat_obj, file = paste0("03_processing/102_hdWGCNA/data/", reduction_name, "_subset_hdWGCNA_object.rds"))
+```
+
+
+
+### Fraction genes hdWGCNA
+
+#### WGCNA setup
+
+```{R plotting_3}
+# Figures should be saved as the subsetted seurat:
+seurat_obj <- seurat_list_prepared[[dataset]]
+reduction_name <- paste0(dataset, "_im")
+if (dataset == "Inhouse") {
+    reduction_name <- "immune_no_doub"
+}
+output_figs <- paste0("03_processing/102_hdWGCNA/figs/batch/", reduction_name, "_", cell_type_of_interest, "_fraction_")
+
+FeaturePlot(seurat_obj,
+    reduction = paste0("umap.harmony.", reduction_name),
+    features = c("CD8A", "CD3E", "CD3D", "CD68", "CD163", "IGHG3", "MS4A1")
+) & NoAxes()
+Idents(seurat_obj) <- "generalised_ann_1"
+VlnPlot(seurat_obj, features = c("CD8A", "CD3E", "CD3D", "CD68", "CD163", "IGHG3", "MS4A1"))
+seurat_obj %>% Reductions()
+DimPlot(seurat_obj,
+    reduction = paste0("umap.harmony.", reduction_name),
+    label = T
+) & NoAxes()
+```
+
+#### Setting up WGCNA fraction
+
+```{R setup wgcna_2}
+expr_matrix <- GetAssayData(seurat_obj, slot = "data") # or "data" for normalized
+gene_expression_fraction <- Matrix::rowSums(expr_matrix > 0) / ncol(expr_matrix)
+genes_to_keep <- names(gene_expression_fraction[gene_expression_fraction >= 0.05])
+# expr_matrix[1:5, 1:5]
+# Matrix::rowSums(expr_matrix > 0) %>% head()
+# ncol(expr_matrix)
+# dim(expr_matrix)
+
+length(genes_to_keep)
+seurat_obj <- SetupForWGCNA(
+    seurat_obj,
+    gene_select = "custom", # the gene selection approach
+    features = genes_to_keep,
+    wgcna_name = reduction_name # the name of the hdWGCNA experiment
+)
+```
+
+#### Setting up the metacells
+
+```{R setup metacells_2}
+# construct metacells  in each group
+seurat_obj <- MetacellsByGroups(
+    seurat_obj = seurat_obj,
+    group.by = c("generalised_ann_1", sample_col), # specify the columns in seurat_obj@meta.data to group by
+    reduction = paste0("harmony_pca.", reduction_name), # select the dimensionality reduction to perform KNN on
+    k = 25, # nearest-neighbors parameter
+    max_shared = 10, # maximum number of shared cells between two metacells
+    ident.group = "generalised_ann_1" # set the Idents of the metacell seurat object
+)
+
+# normalize metacell expression matrix:
+seurat_obj <- NormalizeMetacells(seurat_obj)
+```
+
+#### Setting the data expression only to t cells
+```{R setdataexpression_2}
+seurat_obj <- SetDatExpr(
+    seurat_obj,
+    group_name = cell_type_of_interest,
+    group.by = "generalised_ann_1",
+    assay = "RNA",
+    layer = "data",
+)
+```
+
+#### determining softpower
+
+```{R softpower analysis_2}
+seurat_obj <- TestSoftPowers(
+    seurat_obj,
+    networkType = "signed" # you can also use "unsigned" or "signed hybrid"
+)
+
+# plot the results:
+plot_list <- PlotSoftPowers(seurat_obj)
+
+# assemble with patchwork
+wrap_plots(plot_list, ncol = 2)
+```
+
+
+```{R power_table function_2, include = F, echo = F, eval = F}
+power_table <- GetPowerTable(seurat_obj)
+```
+
+
+#### Constructing module network (and plotting dendograms)
+```{R constructing the network and plotting for different splits_2}
+seurat_obj <- ConstructNetwork(
+    seurat_obj,
+    tom_name = "TOM_matrix_0", # name of the topoligical overlap matrix written to disk
+    deepSplit = 0, # Lowest possible settings to get only the most robust modules
+    overwrite_tom = TRUE
+)
+PlotDendrogram(seurat_obj, main = "Tcell hdWGCNA Dendrogram_0")
+
+seurat_obj <- ConstructNetwork(
+    seurat_obj,
+    tom_name = "TOM_matrix_4", # name of the topoligical overlap matrix written to disk
+    deepSplit = 4, # Highest possible setting yields all possible modules to be found (very sensitive)
+    overwrite_tom = TRUE
+)
+PlotDendrogram(seurat_obj, main = "Tcell hdWGCNA Dendrogram_4")
+
+seurat_obj <- ConstructNetwork(
+    seurat_obj,
+    tom_name = "TOM_matrix_2", # name of the topoligical overlap matrix written to disk
+    deepSplit = 2, # Probably the most accurate, but depends on the graph, as it is a balance between sensitivity and robustness
+    overwrite_tom = TRUE
+)
+PlotDendrogram(seurat_obj, main = "Tcell hdWGCNA Dendrogram_2")
+```
+
+#### Moduling eigengenes
+
+This function takes into account the network modules, performs PCA on the esubsetted gene matrices. Then the first PC with the highest variability in the Module is extracted as the Eigenmodule (basically the genes that explain the most variability in this module).
+
+```{R   extracting info from the top eigen genes_2, warning=F, echo = T, include = F}
+seurat_obj <- ModuleEigengenes(
+    seurat_obj,
+    group.by.vars = sample_col
+)
+### Warning::
+#   You're computing too large a percentage of total singular values, use a standard svd instead.
+
+hMEs <- GetMEs(seurat_obj) #  harmonized module eigengenes:
+
+MEs <- GetMEs(seurat_obj, harmonized = FALSE) # module eigengenes:
+```
+
+#### module connectivity on T-cells
+```{R determining the moduleconnectivity_2}
+seurat_obj <- ModuleConnectivity(
+    seurat_obj,
+    group.by = "generalised_ann_1", group_name = cell_type_of_interest
+)
+```
+
+#### Plotting module ranked genes
+```{R gene ranks and resetting name_2, fig.width = 10, fig.height = 10}
+seurat_obj <- ResetModuleNames(
+    seurat_obj,
+    new_name = paste0(cell_type_of_interest, "-M")
+)
+p <- PlotKMEs(seurat_obj, ncol = 2)
+p
+ggsave(plot = p, filename = paste0(output_figs, "ranked_genes_per_module.png"), width = 15, height = 15)
+```
+
+#### Extracting info from modules
+
+```{R getting module info_2}
+modules <- GetModules(seurat_obj) %>% subset(module != "grey")
+
+# show the first 6 columns:
+head(modules[, 1:6])
+
+hub_df <- GetHubGenes(seurat_obj, n_hubs = 10)
+
+head(hub_df)
+```
+
+#### plotting scores on featureplots
+
+```{R plotting scores_2}
+seurat_obj <- ModuleExprScore(
+    seurat_obj,
+    n_genes = 25,
+    method = "UCell"
+)
+
+plot_list <- ModuleFeaturePlot(
+    seurat_obj,
+    features = "hMEs", # plot the hMEs
+    order = TRUE, # order so the points with highest hMEs are on top
+    reduction = paste0("umap.harmony.", reduction_name)
+)
+# stitch together with patchwork
+wrap_plots(plot_list, ncol = 2)
+ggsave(filename = paste0(output_figs, "feature_plot_modules_hMEs.png"))
+
+
+plot_list <- ModuleFeaturePlot(
+    seurat_obj,
+    features = "MEs", # plot the hMEs
+    order = TRUE, # order so the points with highest hMEs are on top
+    reduction = paste0("umap.harmony.", reduction_name)
+)
+# stitch together with patchwork
+wrap_plots(plot_list, ncol = 2)
+ggsave(filename = paste0(output_figs, "feature_plot_modules_ME.png"))
+
+
+# make a featureplot of hub scores for each module
+plot_list <- ModuleFeaturePlot(
+    seurat_obj,
+    features = "scores", # plot the hub gene scores
+    order = "shuffle", # order so cells are shuffled
+    ucell = TRUE, # depending on Seurat vs UCell for gene scoring
+    reduction = paste0("umap.harmony.", reduction_name)
+)
+
+# stitch together with patchwork
+wrap_plots(plot_list, ncol = 2)
+ggsave(filename = paste0(output_figs, "feature_plot_modules_hub.png"))
+```
+
+
+```{R saving seurat_2, eval = T}
+saveRDS(seurat_obj, file = paste0("03_processing/102_hdWGCNA/data/", reduction_name, "_", cell_type_of_interest, "_fraction_hdWGCNA_object.rds"))
+```
+
+```{R unimportant,  echo = F,eval = F}
+seurat_obj$cluster <- do.call(rbind, strsplit(as.character(seurat_obj$generalised_ann_1), " "))[, 1]
+levels(seurat_obj$cluster) <- levels(seurat_obj$generalised_ann_1)
+seurat_obj$cluster %>% unique()
+rownames(subset(seurat_obj@meta.data, generalised_ann_1 == "T_cells")) %>% head()
+seurat_obj$generalised_ann_1 %>% unique()
+seurat_obj@meta.data %>% head()
+ModuleRadarPlot(
+    seurat_obj,
+    group.by = "generalised_ann_1",
+    barcodes = rownames(seurat_obj@meta.data), # rownames(subset(seurat_obj@meta.data, generalised_ann_1 == "T_cells")),
+    axis.label.size = 4,
+    grid.label.size = 4
+)
+# ModuleCorrelogram(seurat_obj)
+```
+
+```{R unimportant_2,echo = F, eval = F}
+# get hMEs from seurat object
+MEs <- GetMEs(seurat_obj, harmonized = TRUE)
+modules <- GetModules(seurat_obj)
+mods <- levels(modules$module)
+mods <- mods[mods != "grey"]
+
+# add hMEs to Seurat meta-data:
+seurat_obj@meta.data <- cbind(seurat_obj@meta.data, MEs)
+```
+
+
+```{R unimportant_3, echo = F,eval = F}
+# plot with Seurat's DotPlot function
+p <- DotPlot(seurat_obj, features = mods, group.by = "generalised_ann_1")
+
+# flip the x/y axes, rotate the axis labels, and change color scheme:
+p <- p +
+    RotatedAxis() +
+    scale_color_gradient2(high = "red", mid = "grey95", low = "blue")
+
+# plot output
+p
+```
+
+## SessionInfo
+
+```{R sessioninfo}
+sessionInfo()
+```
+
+
+```{R  rmd, eval = F}
+rmarkdown::render(
+    input = paste0("02_scripts/101_processing_external_datasets/07_hdWGCNA_forreal.rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits",
+    output_file = paste0("initial_hdWGCNA_analysis.html")
+)
+```
+

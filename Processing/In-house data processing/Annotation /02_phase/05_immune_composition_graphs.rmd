@@ -1,0 +1,219 @@
+
+---
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+title: "`r paste0('Immune compartment analysis of singlecellRNAseq samples')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE, tidy.opts = list(width.cutoff = 60), tidy = FALSE, fig.height = 15, fig.width = 20) # nolint
+set.seed(91774)
+```
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+library(DoubletFinder)
+library(clustree)
+library(knitr)
+library(rscrublet)
+library(Matrix)
+library(patchwork)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/01_phase/lineage_annotation/per_sample_annotation.rmd")
+```
+
+```{R Loading meta data, echo = FALSE, message = FALSE}
+meta_data <- read.csv(here("03_processing/01_QC/data/meta_data.csv"))
+for (sample in meta_data$sample_fullname) {
+    print(sample)
+}
+```
+
+```{R output locations, echo = TRUE}
+output_dir <- paste0(here(), "/", "03_processing/09_subset_annotation/")
+# output_marker <- paste0(output_dir, "marker_list/")
+output_figs <- paste0(output_dir, "figs/composition_graphs/")
+```
+
+
+```{R colour pallete}
+color_palette_specific <- c(
+    # Blues (8 colors) - smooth transition from dark to light
+    "#1B365D", "#2D5DA1", "#3E7CC2", "#5193D1", "#6AAAE0", "#83C1EF", "#9FD6F9", "#BCEAFE",
+
+    # Greens (3 colors) - soft transition
+    "#1E5631", "#4C9A2A", "#88C070",
+
+    # Reds (3 colors) - slightly varied shades
+    "#7C1C2E", "#B53037", "#E24A46",
+
+    # Oranges (6 colors) - soft transition
+    "#8F4E14", "#C3651B", "#E88F32", "#F5B971", "#D6791A", "#E88E3A",
+
+    # Distinct oranges (3 colors - **more contrast**)
+
+
+    "#FFD166", # Soft, pastel yellow-orange
+    "#FF6B00", # Vivid, fiery orange
+    "grey" # Warm, golden orange
+)
+
+color_palette_general <- c(
+    # Blues
+    "#1B365D",
+
+    # Greens
+    "#1E5631",
+
+    # Reds (3 colors) - slightly varied shades
+    "#7C1C2E", "#B53037", "#E24A46",
+
+    # Oranges (6 colors) - soft transition
+    "#8F4E14", "#C3651B", "#E88F32", "#F5B971", "#D6791A", "#E88E3A",
+
+    # Distinct oranges (3 colors - **more contrast**)
+
+    "#FFD166", # Soft, pastel yellow-orange
+    "#FF6B00", # Vivid, fiery orange
+    "grey"
+)
+
+primary_colors <- c("#66c2a5", "#fc8d62", "#8da0cb", "#e78ac3")
+primary_colors_sample <- c("#66c2a5", "#fc8d62", "#fc8d62", "#8da0cb", "#e78ac3", "#e78ac3", "#e78ac3", "#e78ac3")
+primary <- c("CUP", "Colon", "Colon", "Lung", "Melanoma", "Melanoma", "Melanoma", "Melanoma")
+primary_sample <- c("CUP", "Colon_1", "Colon_2", "Lung", "Melanoma_1_sorted", "Melanoma_2_sorted", "Melanoma_2_unsorted", "Melanoma_3_unsorted")
+```
+
+
+
+```{R Annotating_clusters_specific, echo = FALSE, eval = T}
+df <- data.frame()
+i <- 0
+for (files in list.files("03_processing/09_subset_annotation/specific_data", full.names = TRUE)[1:8]) {
+    print(basename(files))
+    print(files)
+    sample <- sub("\\..*", "", basename(files))
+    seurat_obj <- readRDS(files)
+    cluster_counts <- table(Idents(seurat_obj))
+    cluster_df <- as.data.frame(cluster_counts)
+    colnames(cluster_df) <- c("Cluster", "Cell_Count")
+    i <- i + 1
+
+    cluster_df$primary <- primary[i]
+    cluster_df$sample_2 <- primary_sample[i]
+    cluster_df$sample <- sample
+
+    df <- rbind(df, cluster_df)
+}
+
+
+
+# df$sample <- gsub("^specific_", "", df$sample)
+df$Cluster <- factor(df$Cluster, levels = c(
+    "Myeloid", "Macrophages", "Monocytes", "Microglia", "DC", "pDCs", "mREGs_DC", "Neutrophils",
+    "B-cells", "Memory_B_cells", "Plasma_cells",
+    "Tumour", "doublets", "Bad-quality",
+    "NK", "Proliferating_NK", "Fhelper-cells", "Tregs",
+    "Proliferating_T-cells", "T-cells_naive", "CD8_T-cells", "CD4_T-cells", "T-cells"
+))
+
+df %>%
+    group_by(sample_2, Cluster) %>%
+    summarise(n = sum(Cell_Count), .groups = "drop") %>%
+    group_by(sample_2) %>%
+    mutate(pct = (n / sum(n)) * 100) -> pct_df
+
+
+
+
+factored <- ggplot(data = pct_df, aes(x = sample_2, y = pct, fill = Cluster)) +
+    geom_bar(stat = "identity") +
+    scale_fill_manual(values = color_palette_specific) +
+    # facet_grid(~primary)    +
+    theme(axis.text.x = element_text(angle = -90, hjust = 0)) & labs(title = "Sample composition for specific annotation", y = "Percentage (%)")
+ggsave(factored, file = paste0(output_figs, "Immune_plot_factored_2.png"), width = 12, height = 9)
+factored
+```
+
+
+```{R general annotation, eval = T}
+df <- data.frame()
+i <- 0
+for (files in list.files("03_processing/09_subset_annotation/specific_data", full.names = TRUE)[1:8]) {
+    print(basename(files))
+    print(files)
+    sample <- sub("\\..*", "", basename(files))
+    seurat_obj <- readRDS(files)
+    cluster_counts <- table(seurat_obj$general_annotation_immune)
+    cluster_df <- as.data.frame(cluster_counts)
+    colnames(cluster_df) <- c("Cluster", "Cell_Count")
+    i <- i + 1
+
+    # cluster_df$sample <- sample
+    cluster_df$primary <- primary[i]
+    cluster_df$sample_2 <- primary_sample[i]
+    cluster_df$sample <- sample
+    df <- rbind(df, cluster_df)
+}
+
+df$Cluster <- factor(df$Cluster, levels = c(
+    "Myeloid",
+    "B-cells",
+    "Tumour", "doublets", "Bad-quality",
+    "NK", "Proliferating_NK", "Fhelper-cells", "Tregs",
+    "Proliferating_T-cells", "T-cells_naive", "CD8_T-cells", "CD4_T-cells", "T-cells"
+))
+
+df %>%
+    drop_na() %>%
+    group_by(sample_2, Cluster) %>%
+    summarise(n = sum(Cell_Count), .groups = "drop") %>%
+    group_by(sample_2) %>%
+    mutate(pct = (n / sum(n)) * 100) -> pct_df
+
+
+general <- ggplot(data = pct_df, aes(x = sample_2, y = pct, fill = Cluster)) +
+    geom_bar(stat = "identity") +
+    scale_fill_manual(values = color_palette_general) +
+    # facet_wrap(~primary) +
+    theme(axis.text.x = element_text(angle = -90, hjust = 0)) & labs(title = "Sample composition for specific annotation", y = "Percentage (%)")
+ggsave(general, file = paste0(output_figs, "Immune_plot_factored_general_2.png"), width = 12, height = 9)
+general
+```
+
+
+
+### Old stuff
+
+```{R old code}
+# color_palette <- c(
+#   # Blues (8 colors) - smooth transition from dark to light
+#   "#1B365D", "#2D5DA1", "#3E7CC2", "#5193D1", "#6AAAE0", "#83C1EF", "#9FD6F9", "#BCEAFE",
+
+#   # Greens (3 colors) - soft transition
+#   "#1E5631", "#4C9A2A", "#88C070",
+
+#   # Reds (3 colors) - slightly varied shades
+#   "#7C1C2E", "#B53037", "#E24A46",
+
+#   # Oranges (9 colors) - now covering the last two groups
+#   "#8F4E14", "#C3651B", "#E88F32", "#F5B971",
+#   "#D6791A", "#E88E3A", "#F5A65B", "#FFC07A", "#FFD9A1"
+# )
+```

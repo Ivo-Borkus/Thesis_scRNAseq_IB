@@ -1,0 +1,255 @@
+---
+title: "Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 1
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE)
+```
+#### Load hdWGCNA env for this!!
+
+
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(ggrepel)
+# library(paletteer)
+library(Matrix)
+library(gridExtra)
+# install.packages("nrscrublet")
+# remotes::install_github("iaaaka/Rscrublet")
+library(rscrublet)
+
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+# here::i_am("02_scripts/QC_sequencing.rmd")
+
+source("02_scripts/101_processing_external_datasets/qc_functions.R")
+set.seed(1123)
+```
+
+# Loading data
+```{R}
+# seurat_biermann <- readRDS("03_processing/100_external_datasets/data/seurat_biermann_initial_meta.rds")
+# seurat_gonzalez <- readRDS("03_processing/100_external_datasets/data/seurat_gonzalez_initial_meta.rds")
+# seurat_lee <- readRDS("03_processing/100_external_datasets/data/seurat_lee_initial_meta.rds")
+```
+
+
+```{R}
+cell_anno_list <- list(
+    Biermann_main = "cell_type_main",
+    Biermann_fine = "cell_type_fine",
+    Biermann_int = "cell_type_int",
+    Biermann_immune = "ct_immune",
+    Biermann_cycling = "cell_cycle",
+    Gonzalez_type = "Cell_Type",
+    Lee_type = "Cell_type",
+    Lee_refined = "Cell_type.refined",
+    Lee_subtype = "Cell_subtype"
+)
+```
+
+## There is missing data in the matrix of subset seurat
+
+#### Cause:  Layerlist asked for dim. the dim function doesn't work if there is only one column in the count.2 and count.4
+#### This caused the output to be 0. It is in the CD45 negative fraction, so there is no problem here.
+
+#### 
+```{R there is missing metadata}
+processed_seurat <- readRDS("03_processing/101_processing_exernal/data/immune/processed_seurat_list_immune.rds")
+seurat_obj <- processed_seurat[[1]]
+obj <- JoinLayers(seurat_obj)
+matrix_Lnorm <- obj[["RNA"]]$data
+ncol(obj) %>% print()
+dim(matrix_Lnorm) %>% print()
+missing_cells <- setdiff(colnames(obj), colnames(matrix_Lnorm))
+metadata_missing <- obj@meta.data[missing_cells, ]
+
+print(metadata_missing)
+```
+
+
+```{R it was okay before}
+seurat_list <- readRDS("03_processing/101_processing_exernal/data/processed_seurat_batch_job.rds")
+seurat_obj <- seurat_list[[1]]
+obj <- JoinLayers(seurat_obj)
+matrix_Lnorm <- obj[["RNA"]]$data
+ncol(obj) %>% print()
+dim(matrix_Lnorm) %>% print()
+### So this one is correct.
+```
+
+
+```{R the missing cells are from the 02 and 03 count layers}
+seurat_obj@meta.data %>%
+    filter(ct_immune == "Immune") %>%
+    filter(ID %in% c("MBM02")) %>%
+    filter(batch == "CD45neg") %>%
+    dim()
+seurat_obj@meta.data %>%
+    filter(ct_immune == "Immune") %>%
+    filter(ID %in% c("MBM03")) %>%
+    filter(batch == "CD45neg") %>%
+    dim()
+### Showing there is only 1 cell in both of the count layers. After filtering on immune
+```
+
+
+```{R where did we go wrong}
+## Perform immune filtering steps on the object:
+immune_info <- list(
+    Biermann = c("ct_immune", "Non-immune"),
+    Gonzalez = c("Cell_Type", "MTC", "MTCs", "vSMCs", "Astrocytes", "EC-1", "EC-2", "EC-3", "PC-1", "PC-2", "PC-3", "MSC-like-c1", "MSC-like-c2"),
+    Lee = c("Cell_type", "Fibroblasts", "Oligodendrocytes", "Epithelial cells")
+)
+names(seurat_list) <- names(immune_info)
+dataset <- names(seurat_list)[1]
+seurat_obj <- seurat_list[[dataset]] # Seurat object selecting it from the list
+info_data <- immune_info[[dataset]] # list of vectors for each dataset that contains the column to set the idents, and then the rest is cell types to exclude
+Idents(seurat_obj) <- seurat_obj@meta.data[[info_data[1]]]
+celltypes_to_exclude <- info_data[2:length(info_data)]
+seurat_obj <- subset(x = seurat_obj, idents = celltypes_to_exclude, invert = T)
+
+
+## After filtering, this step then provides problems
+layersList <- lapply(seurat_obj@assays$RNA@layers, function(x) {
+    dim(x)
+    length(x)
+})
+
+print(layersList) # 2 and 4 are null, as dim(cant give the dim of a vector )
+# After looking at the length, it is apparent the length is a multiple of the cells times the genes present. For 2 and 4 it is the exact same as the genes. Therefore this shows there is only 1 column.
+seurat_obj@assays$RNA@layers[names(layersList[sapply(layersList, is.null)])] <- NULL
+# obj <- JoinLayers(seurat_obj)
+# matrix_Lnorm <- obj[["RNA"]]$data
+# ncol(obj) %>% print()
+# dim(matrix_Lnorm) %>% print()
+# Now there is a mismatch
+```
+
+```{R}
+processed_seurat[[1]]@meta.data %>%
+    filter(ct_immune == "Immune") %>%
+    filter(ID %in% c("MBM02", "MBM03")) %>%
+    filter(batch == "CD45neg") %>%
+    rownames() -> cells_to_remove
+
+
+# processed_seurat[[1]]@assays$RNA@cells@.Data %>% dim()
+processed_seurat[[1]]@meta.data$cells_keep <- ifelse(!rownames(processed_seurat[[1]]@meta.data) %in% cells_to_remove, TRUE, FALSE)
+# processed_seurat[[1]]@meta.data %>% rownames() %>% head()
+# table(processed_seurat[[1]]$cells_keep)
+
+cells.Data <- subset(processed_seurat[[1]]@assays$RNA@cells@.Data, subset = processed_seurat[[1]]@meta.data$cells_keep == TRUE)
+processed_seurat[[1]]@assays$RNA@cells@.Data <- cells.Data
+processed_seurat[[1]]@meta.data <- processed_seurat[[1]]@meta.data[!rownames(processed_seurat[[1]]@meta.data) %in% cells_to_remove, ]
+
+
+processed_seurat[[1]]@meta.data %>% dim()
+processed_seurat[[1]][["RNA"]] %>% dim()
+rownames(processed_seurat[[1]]@meta.data) %>% length()
+Cells(processed_seurat[[1]]) %>% length()
+
+seurat_obj <- processed_seurat[[1]]
+obj <- JoinLayers(seurat_obj)
+```
+
+```{R}
+seurat_list <- readRDS("03_processing/101_processing_exernal/data/batch_job_2/processed_seurat_batch_job.rds")
+subset <- subset(x = seurat_list[[1]], subset = batch == "CD45pos")
+
+
+seurat_list[[1]]@meta.data$ct_immune %>% table()
+subset$ct_immune %>% table()
+
+seurat_list[[1]] <- subset
+```
+
+
+
+
+```{R loading previous data}
+# seurat_list <- readRDS("03_processing/101_processing_exernal/data/processed_seurat_batch_job.rds")
+output_figs <- "03_processing/101_processing_exernal/figs/immune_2/"
+sample_list <- list(
+    Biermann = "ID",
+    Gonzalez = "sample_names",
+    Lee = "Sample"
+)
+
+immune_info <- list(
+    Biermann = c("ct_immune", "Non-immune"),
+    Gonzalez = c("Cell_Type", "MTC", "MTCs", "vSMCs", "Astrocytes", "EC-1", "EC-2", "EC-3", "PC-1", "PC-2", "PC-3", "MSC-like-c1", "MSC-like-c2"),
+    Lee = c("Cell_type", "Fibroblasts", "Oligodendrocytes", "Epithelial cells")
+)
+```
+
+
+
+```{R processing}
+names(seurat_list) <- names(immune_info)
+
+processed_seurat <- lapply(names(seurat_list), function(seurat) {
+    dataset <- seurat
+    seurat_obj <- seurat_list[[dataset]] # Seurat object selecting it from the list
+    info_data <- immune_info[[dataset]] # list of vectors for each dataset that contains the column to set the idents, and then the rest is cell types to exclude
+
+    Idents(seurat_obj) <- seurat_obj@meta.data[[info_data[1]]]
+    # unique(Idents(seurat_obj)) %>% print()
+    celltypes_to_exclude <- info_data[2:length(info_data)]
+    # print(dataset)
+    seurat_obj <- subset(x = seurat_obj, idents = celltypes_to_exclude, invert = T)
+    reduction_name <- paste0(dataset, "_im")
+    seurat_obj %>% print()
+    seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = "vst", nfeatures = 2000, verbose = TRUE)
+    hvf_info <- HVFInfo(seurat_obj)
+    top_variable_genes <- hvf_info[order(hvf_info$variance.standardized, decreasing = TRUE), ]
+    top_2000_genes <- rownames(top_variable_genes)[1:2000]
+    VariableFeatures(seurat_obj) <- top_2000_genes
+    all.genes <- rownames(seurat_obj)
+    seurat_obj <- ScaleData(object = seurat_obj, features = all.genes, verbose = FALSE)
+    seurat_obj <- RunPCA(
+        object = seurat_obj, nfeatures.print = 5, ndims.print = 1:2, reduction.name = paste0("pca_", reduction_name)
+    )
+
+    elb <- ElbowPlot(seurat_obj, reduction = paste0("pca_", reduction_name), ndims = 50)
+    ggsave(filename = paste0(output_figs, dataset, "_vizdim.png"), plot = VizDimLoadings(seurat_obj, dims = 1:5, reduction = paste0("pca_", reduction_name), nfeatures = 15), width = 15, height = 15)
+    ggsave(filename = paste0(output_figs, dataset, "_elb.png"), elb, width = 15, height = 15)
+    seurat_obj
+    saveRDS(seurat_obj, paste0("03_processing/101_processing_exernal/data/immune/", dataset, "_pre_int.rds"))
+    seurat_obj <- IntegrateLayers(
+        object = seurat_obj, method = HarmonyIntegration,
+        orig.reduction = paste0("pca_", reduction_name), new.reduction = paste0("harmony_pca.", reduction_name),
+        verbose = TRUE
+    )
+    res_values <- c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.5)
+    seurat_obj <- FindNeighbors(seurat_obj, reduction = paste0("harmony_pca.", reduction_name), dims = 1:25)
+    seurat_obj <- FindClusters(seurat_obj, resolution = res_values, algorithm = 4)
+    seurat_obj <- RunUMAP(seurat_obj, reduction = paste0("harmony_pca.", reduction_name), dims = 1:25, reduction.name = paste0("umap.harmony.", reduction_name))
+})
+
+obj <- JoinLayers(processed_seurat[[1]])
+```
+
+
+
+```{R rmd, eval = F}
+rmarkdown::render(
+    input = paste0("02_scripts/101_processing_external_datasets/random_problems.rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits",
+    output_file = paste0("random_problems.html")
+)
+```

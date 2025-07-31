@@ -1,0 +1,161 @@
+---
+title: "Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 1
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(ggrepel)
+# library(paletteer)
+library(gridExtra)
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+# here::i_am("02_scripts/QC_sequencing.rmd")
+```
+
+
+# Sample info
+### Creating meta-data for all samples
+
+# Loading of Kim data:
+In the code it is referenced as the Lee dataset.
+This is due to the naming I overtook from the Pan-cancer dataset study by Xing, Xudong et al. Cancer cell. 2025 
+
+```{R }
+sample_id_lee <- c("NS_02", "NS_03", "NS_04", "NS_06", "NS_07", "NS_12", "NS_13", "NS_16", "NS_17", "NS_19")
+lee_dir <- "01_data/external_data/lee/"
+lee_rds <- readRDS(paste0(lee_dir, "GSE131907_Lung_Cancer_raw_UMI_matrix.rds"))
+lee_meta <- read.csv("01_data/external_data/lee/GSE131907_Lung_Cancer_cell_annotation.txt.gz", sep = "\t")
+meta_to_keep <- which(lee_meta$Sample %in% sample_id_lee)
+meta_filtered <- lee_meta[meta_to_keep, ]
+meta_filtered %>% dim()
+
+
+cell_sample_ids <- sapply(strsplit(colnames(lee_rds), "_"), function(x) paste0(x[length(x) - 1], "_", x[length(x)]))
+cells_to_keep <- which(cell_sample_ids %in% sample_id_lee)
+counts_filtered <- lee_rds[, cells_to_keep]
+
+rownames(meta_filtered) <- meta_filtered$Index
+head(meta_filtered)
+
+seurat_lee <- CreateSeuratObject(counts = counts_filtered, meta.data = meta_filtered, project = "Lee")
+seurat_lee[["percent_mt"]] <- PercentageFeatureSet(seurat_lee, pattern = "^MT-")
+# saveRDS(seurat_lee, "03_processing/100_external_datasets/data/seurat_lee_initial.rds")
+```
+
+# Loading of Biermann data
+
+
+```{R}
+biermann_dir <- "01_data/external_data/biermann/"
+
+sample_biermann_list <- list(
+    MBM01_pos = list.files(biermann_dir)[c(2, 3, 5)],
+    MBM02_neg = list.files(biermann_dir)[c(7, 8, 10)],
+    MBM02_pos = list.files(biermann_dir)[c(11, 12, 14)],
+    MBM03_neg = list.files(biermann_dir)[c(16, 17, 19)],
+    MBM03_pos = list.files(biermann_dir)[c(20, 21, 23)],
+    MBM04_neg = list.files(biermann_dir)[c(25, 26, 28)],
+    MBM04_pos = list.files(biermann_dir)[c(29, 30, 32)],
+    MBM05_neg = list.files(biermann_dir)[c(34, 35, 37)],
+    MBM05_pos = list.files(biermann_dir)[c(38, 39, 41)]
+)
+
+seurat_list_biermann <- lapply(names(sample_biermann_list), function(x) {
+    name <- x
+    x <- sample_biermann_list[[x]]
+    barcodes_dir <- paste0(biermann_dir, x[1])
+    features_dir <- paste0(biermann_dir, x[2])
+    mtx_dir <- paste0(biermann_dir, x[3])
+    matrix_read <- ReadMtx(mtx = mtx_dir, cells = barcodes_dir, features = features_dir)
+    seurat_object <- CreateSeuratObject(counts = matrix_read)
+    seurat_object[["percent_mt"]] <- PercentageFeatureSet(seurat_object, pattern = "^MT-")
+    seurat_object$sample_names <- name
+    seurat_object
+})
+
+
+for (i in 1:length(seurat_list_biermann)) {
+    print(paste("number of cells in sample", i, ": ", ncol(seurat_list_biermann[[i]])))
+    print(paste("number of features in sample", i, ": ", nrow(seurat_list_biermann[[i]])))
+}
+
+names(seurat_list_biermann) <- names(sample_biermann_list)
+seurat_biermann <- merge(seurat_list_biermann[[1]],
+    y = seurat_list_biermann[2:length(seurat_list_biermann)],
+    add.cell.ids = names(sample_biermann_list)
+)
+str(seurat_biermann)
+# saveRDS(seurat_biermann, "03_processing/100_external_datasets/data/seurat_biermann_initial.rds")
+```
+
+# loading of Gonzalez data
+
+```{R gonzalez}
+gonza_dir <- "01_data/external_data/gonzalez/"
+sample_gonza_list <- list(
+    Melan_1 = list.files(gonza_dir)[c(1, 3, 5)],
+    Melan_2 = list.files(gonza_dir)[c(7, 9, 11)],
+    Melan_3 = list.files(gonza_dir)[c(13, 15, 17)],
+    Breast_1 = list.files(gonza_dir)[c(19, 21, 23)],
+    Breast_2 = list.files(gonza_dir)[c(25, 27, 29)],
+    Breast_3 = list.files(gonza_dir)[c(31, 33, 35)],
+    Lung_1 = list.files(gonza_dir)[c(37, 39, 41)],
+    Lung_2 = list.files(gonza_dir)[c(43, 45, 47)],
+    Lung_3 = list.files(gonza_dir)[c(49, 51, 53)],
+    Ova_1 = list.files(gonza_dir)[c(55, 57, 59)],
+    Ova_2 = list.files(gonza_dir)[c(61, 63, 65)],
+    Colon_1 = list.files(gonza_dir)[c(67, 69, 71)],
+    Renal_1 = list.files(gonza_dir)[c(73, 75, 77)],
+    RMS_1 = list.files(gonza_dir)[c(85, 86, 87)] # Rhabdomyosarcoma
+)
+
+seurat_list_gonza <- lapply(names(sample_gonza_list), function(x) {
+    name <- x
+    x <- sample_gonza_list[[x]]
+    barcodes_dir <- paste0(gonza_dir, x[1])
+    features_dir <- paste0(gonza_dir, x[2])
+    mtx_dir <- paste0(gonza_dir, x[3])
+    matrix_read <- ReadMtx(mtx = mtx_dir, cells = barcodes_dir, features = features_dir)
+    seurat_object <- CreateSeuratObject(counts = matrix_read)
+    seurat_object[["percent_mt"]] <- PercentageFeatureSet(seurat_object, pattern = "^MT-")
+    seurat_object$sample_names <- name
+    seurat_object
+})
+for (i in 1:length(seurat_list_gonza)) {
+    print(paste("number of cells in sample", i, ": ", ncol(seurat_list_gonza[[i]])))
+    print(paste("number of features in sample", i, ": ", nrow(seurat_list_gonza[[i]])))
+}
+names(seurat_list_gonza) <- names(sample_gonza_list)
+seurat_gonza <- merge(seurat_list_gonza[[1]],
+    y = seurat_list_gonza[2:length(seurat_list_gonza)],
+    add.cell.ids = names(sample_gonza_list)
+)
+
+# saveRDS(seurat_gonza, "03_processing/100_external_datasets/data/seurat_gonzalez_initial.rds")
+```
+
+```{R}
+sessionInfo()
+```
+
+
+

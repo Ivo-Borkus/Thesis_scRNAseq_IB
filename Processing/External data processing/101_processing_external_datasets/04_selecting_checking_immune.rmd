@@ -1,0 +1,257 @@
+---
+title: "Analysis of singlecellRNAseq data by 10x"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 1
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+# Loading packages
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(ggrepel)
+# library(paletteer)
+library(gridExtra)
+# remotes::install_github("iaaaka/Rscrublet")
+# install.packages("harmony")
+library(rscrublet)
+library(harmony) # install using mamba, R is now downgraded
+setwd("/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met")
+# here::i_am("02_scripts/QC_sequencing.rmd")
+
+source("02_scripts/101_processing_external_datasets/qc_functions.R")
+```
+
+# Subsetting external data for immune and T cell populations.
+
+
+
+```{R loading function}
+umap_feature_vec <- c(
+    "PTPRC", # Immune
+    "TOP2A", "MKI67", "STMN1", # Proliferative
+    ## Lymphoid
+    "CD3D", "CD3E", # T cells
+    "CD4", "CD8A", "CD8B", # distinction between 4 and 8
+    "FOXP3", "IL2RA", # T regs
+    "TOX", # Tfh cell
+    "NCAM1", "KLRF1", # NK cells
+    "MS4A1", "CD79A", # B cells
+    # "TCL1A", # Naive B cells
+    # "BANK1", "BLK", # Memory/ activated B cells
+    "SDC1", "PRDM1", # Plasma cells
+    ## Myeloid
+    "S100A8", "CD14", # Monocytes
+    "CD163", "CD68", # Macrophage markers
+    "P2RY12", "SLC2A5", # microglia
+    "IL3RA", # pDCs
+    "CD1C", # DCs
+    "MAG", "MLANA" # other cells
+)
+
+Running_plots_post_harmony <- function(seurat_obj, reduction_name, sample_col, dataset) {
+    resolution_columns <- grep("^RNA_snn_res\\.",
+        colnames(seurat_obj@meta.data),
+        value = TRUE
+    )
+    umap_resolution_combined <- DimPlot(
+        object = seurat_obj,
+        reduction = paste0("umap.harmony.", reduction_name),
+        group.by = resolution_columns,
+        pt.size = 0.1,
+        label = TRUE
+    ) & NoLegend() &
+        theme(plot.title = element_text(size = 10)) &
+        NoAxes() # & labs(title = paste0("Data: ", reduction_name, " plot of resolutions "))
+    print(umap_resolution_combined)
+    ggsave(umap_resolution_combined, file = paste0(output_figs, reduction_name, "_harmony_res.png"))
+
+
+    features <- FeaturePlot(seurat_obj,
+        features = umap_feature_vec,
+        reduction = paste0("umap.harmony.", reduction_name),
+        ncol = 3, order = TRUE
+    ) & NoAxes() # & labs(title = paste0("Data: ", reduction_name, " plot of features "))
+    print(features)
+    ggsave(features, file = paste0(output_figs, reduction_name, "_harmony_features.png"), width = 18, height = 20)
+
+
+    umap_by_sample <- DimPlot(
+        object = seurat_obj,
+        reduction = paste0("umap.harmony.", reduction_name),
+        group.by = sample_col,
+        pt.size = 0.1,
+        label = T
+    ) & theme(plot.title = element_text(size = 10)) &
+        NoAxes() & labs(title = paste0("Data: ", reduction_name, " plot of samples"))
+    print(umap_by_sample)
+
+    ggsave(umap_by_sample, file = paste0(output_figs, reduction_name, "_harmony_samples.png"), height = 20, width = 20)
+
+    if (dataset == "Biermann") {
+        print("This is the Biermann dataset")
+        for (i in c(1:5)) {
+            cell_anno_list[[1]]
+            umap_by_annotation <- DimPlot(
+                object = seurat_obj,
+                reduction = paste0("umap.harmony.", reduction_name),
+                group.by = cell_anno_list[[i]],
+                pt.size = 0.1,
+                label = T,
+            ) & theme(plot.title = element_text(size = 10))
+            ggsave(umap_by_annotation, file = paste0(output_figs, reduction_name, i, "_harmony_specific_annotation.png"), height = 20, width = 20)
+        }
+    } else if (dataset == "Gonzalez") {
+        print("This is the Gonzalez dataset")
+        for (i in c(6)) {
+            cell_anno_list[[1]]
+            umap_by_annotation <- DimPlot(
+                object = seurat_obj,
+                reduction = paste0("umap.harmony.", reduction_name),
+                group.by = cell_anno_list[[i]],
+                pt.size = 0.1,
+                label = T,
+            ) & theme(plot.title = element_text(size = 10))
+            ggsave(umap_by_annotation, file = paste0(output_figs, reduction_name, i, "_harmony_specific_annotation.png"), height = 20, width = 20)
+        }
+    } else {
+        print("This is the Lee dataset")
+        for (i in c(7:9)) {
+            cell_anno_list[[1]]
+            umap_by_annotation <- DimPlot(
+                object = seurat_obj,
+                reduction = paste0("umap.harmony.", reduction_name),
+                group.by = cell_anno_list[[i]],
+                pt.size = 0.1,
+                label = T,
+            ) & theme(plot.title = element_text(size = 10))
+            ggsave(umap_by_annotation, file = paste0(output_figs, reduction_name, i, "_harmony_specific_annotation.png"), height = 20, width = 20)
+        }
+    }
+}
+```
+
+
+
+
+
+```{R loading previous data}
+seurat_list <- readRDS("03_processing/101_processing_exernal/data/processed_seurat_batch_job.rds")
+subset <- subset(x = seurat_list[[1]], subset = batch == "CD45pos")
+seurat_list[[1]] <- subset
+output_figs <- "03_processing/101_processing_exernal/figs/immune_2/"
+sample_list <- list(
+    Biermann = "ID",
+    Gonzalez = "sample_names",
+    Lee = "Sample"
+)
+immune_info <- list(
+    Biermann = c("ct_immune", "Non-immune"),
+    Gonzalez = c("Cell_Type", "MTC", "MTCs", "vSMCs", "Astrocytes", "EC-1", "EC-2", "EC-3", "PC-1", "PC-2", "PC-3", "MSC-like-c1", "MSC-like-c2"),
+    Lee = c("Cell_type", "Fibroblasts", "Oligodendrocytes", "Epithelial cells")
+)
+```
+
+
+
+```{R processing}
+names(seurat_list) <- names(immune_info)
+
+processed_seurat <- lapply(names(seurat_list), function(seurat) {
+    dataset <- seurat
+    seurat_obj <- seurat_list[[dataset]] # Seurat object selecting it from the list
+    info_data <- immune_info[[dataset]] # list of vectors for each dataset that contains the column to set the idents, and then the rest is cell types to exclude
+
+    Idents(seurat_obj) <- seurat_obj@meta.data[[info_data[1]]]
+    # unique(Idents(seurat_obj)) %>% print()
+    celltypes_to_exclude <- info_data[2:length(info_data)]
+    # print(dataset)
+    seurat_obj <- subset(x = seurat_obj, idents = celltypes_to_exclude, invert = T)
+    reduction_name <- paste0(dataset, "_im")
+    seurat_obj %>% print()
+
+    seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = "vst", nfeatures = 2000, verbose = TRUE)
+    hvf_info <- HVFInfo(seurat_obj)
+    top_variable_genes <- hvf_info[order(hvf_info$variance.standardized, decreasing = TRUE), ]
+    top_2000_genes <- rownames(top_variable_genes)[1:2000]
+    VariableFeatures(seurat_obj) <- top_2000_genes
+    all.genes <- rownames(seurat_obj)
+    seurat_obj <- ScaleData(object = seurat_obj, features = all.genes, verbose = FALSE)
+    seurat_obj <- RunPCA(
+        object = seurat_obj, nfeatures.print = 5, ndims.print = 1:2, reduction.name = paste0("pca_", reduction_name)
+    )
+
+    elb <- ElbowPlot(seurat_obj, reduction = paste0("pca_", reduction_name), ndims = 50)
+    ggsave(filename = paste0(output_figs, dataset, "_vizdim.png"), plot = VizDimLoadings(seurat_obj, dims = 1:5, reduction = paste0("pca_", reduction_name), nfeatures = 15), width = 15, height = 15)
+    ggsave(filename = paste0(output_figs, dataset, "_elb.png"), elb, width = 15, height = 15)
+    seurat_obj
+    saveRDS(seurat_obj, paste0("03_processing/101_processing_exernal/data/immune/", dataset, "_pre_int_2.rds"))
+    seurat_obj <- IntegrateLayers(
+        object = seurat_obj, method = HarmonyIntegration,
+        orig.reduction = paste0("pca_", reduction_name), new.reduction = paste0("harmony_pca.", reduction_name),
+        verbose = TRUE
+    )
+    res_values <- c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.5)
+    seurat_obj <- FindNeighbors(seurat_obj, reduction = paste0("harmony_pca.", reduction_name), dims = 1:25)
+    seurat_obj <- FindClusters(seurat_obj, resolution = res_values, algorithm = 4)
+    seurat_obj <- RunUMAP(seurat_obj, reduction = paste0("harmony_pca.", reduction_name), dims = 1:25, reduction.name = paste0("umap.harmony.", reduction_name))
+})
+# processed_seurat
+# obj <- JoinLayers(processed_seurat[[1]])
+saveRDS(processed_seurat, "03_processing/101_processing_exernal/data/immune/processed_seurat_list_immune_2.rds")
+```
+
+```{R running plots} 
+## In the future make a vector for each dataset to loop over.
+cell_anno_list <- list(
+    Biermann_main = "cell_type_main",
+    Biermann_fine = "cell_type_fine",
+    Biermann_int = "cell_type_int",
+    Biermann_immune = "ct_immune",
+    Biermann_cycling = "cell_cycle",
+    Gonzalez_type = "Cell_Type",
+    Lee_type = "Cell_type",
+    Lee_refined = "Cell_type.refined",
+    Lee_subtype = "Cell_subtype"
+)
+processed_seurat <- readRDS("03_processing/101_processing_exernal/data/immune/processed_seurat_list_immune_2.rds")
+names(processed_seurat) <- names(immune_info)
+lapply(names(processed_seurat), function(seurat) {
+    dataset <- seurat
+    reduction_name <- paste0(dataset, "_im")
+    seurat_obj <- processed_seurat[[dataset]]
+    sample_col <- sample_list[[dataset]][1]
+    ncol(seurat_obj)
+
+    Running_plots_post_harmony(seurat_obj, reduction_name, sample_col = sample_col, dataset = dataset)
+})
+```
+
+```{R session info}
+sessionInfo()
+```
+
+
+```{R rmd, eval = F}
+rmarkdown::render(
+    input = paste0("02_scripts/101_processing_external_datasets/04_selecting_checking_immune.rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits",
+    output_file = paste0("04_selecting_checking_immune.html")
+)
+```
+

@@ -1,0 +1,56 @@
+
+---
+title: "Analysis of singlecellRNAseq sample 105086-009-003"
+author: "Ivo Borkus"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:  
+  pdf_document: default
+  html_document:
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met") # nolint
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+
+```{R loading libraries, include = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+library(here)
+library(tidyr)
+library(paletteer)
+library(ggrepel)
+library(gridExtra)
+library(DoubletFinder)
+setwd("/scratch_isilon/groups/singl1ecell/iborkus/Projects/brain_met")
+here::i_am("02_scripts/QC_per_sample/sample_1.rmd")
+```
+
+```{R}
+for (files in list.files("03_processing/01_QC/data/subsets/Doublet_finder", full.names = TRUE)) {
+    print(basename(files))
+    print(files)
+    sample <- sub("\\..*", "", basename(files))
+    seurat_obj <- readRDS(files)
+    # features <- FeaturePlot(seurat_obj, features = c("PTPRC", "CD4", "CD8A", "CD8B", "CD3D", "CD3E", "MS4A1", "CD79A", "CD79B", "S100A8", "CD14", "C1QC", "CD68", "LILRA4", "IL3RA", "PRDM16", "CLEC9A", "CD1C", "MAG", "MLANA"), ncol = 3) & NoAxes()
+    features_reduced <- FeaturePlot(seurat_obj, features = c("PTPRC", "CD4", "CD8B", "CD3E", "MS4A1", "CD14", "C1QC", "LILRA4", "CD1C", "MAG", "MLANA"), ncol = 4, order = TRUE) & NoAxes()
+
+    ggsave(features_reduced, file = paste0("02_scripts/test_", sample, ".png"), width = 18, height = 12)
+}
+```
+
+```{R, echo = FALSE, eval = FALSE}
+rmarkdown::render(
+    input = paste0("02_scripts/workflow_per_sample/sample_", index, ".rmd"),
+    output_format = "html_document",
+    output_dir = "/scratch_isilon/groups/singlecell/iborkus/Projects/brain_met/02_scripts/knits/workflow_per_sample",
+    output_file = paste0("sample_", index, "_total_workflow.html")
+)
+```
